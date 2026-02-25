@@ -1,5 +1,45 @@
 [
   {
+    "assignment name": "Introduce yourself here too",
+    "due-date": "01/24/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "Quiz wk1 (Syllabus)",
+    "due-date": "01/24/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "Quiz wk2 (protocols)",
+    "due-date": "01/28/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "Quiz 0 (Student Survey) ",
+    "due-date": "01/30/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "Quiz wk3 (Overview)",
+    "due-date": "02/05/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "Quiz wk4 (App Layer - upto http/cookies)",
+    "due-date": "02/13/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "CS 3610 Assignment 1",
+    "due-date": "02/14/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
+    "assignment name": "Quiz wk 5 (HTTP, SMTP, and DNS)",
+    "due-date": "02/21/2026",
+    "Class": "COMP SCI 3610 - Intro Computer Networks"
+  },
+  {
     "assignment name": "CS 3610 Assignment 2",
     "due-date": "02/27/2026",
     "Class": "COMP SCI 3610 - Intro Computer Networks"

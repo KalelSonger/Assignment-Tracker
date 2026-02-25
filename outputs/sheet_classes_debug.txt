@@ -2,7 +2,7 @@ Sheet class debug output
 ========================
 
 Raw API response:
-{"status":"success","tabs":["Class [TEMPLATE]","Dashboard","COMP ENG 3150 - Intro Micro Embed Design","MATH 3108 - Linear Algebra I","PHILOS 3225 - Engineering Ethics","COMP SCI 3610 - Intro Computer Networks","PHYSICS 2135 - Engineering Physics II"]}
+{"status":"success","spreadsheetId":"1nFUoOWcA7hQ6B_724h9rwMiE0fzUto9IU4nxHzdxXhI","spreadsheetName":"Testing Copy of Assignment Tracking Spring 2026","tabs":["Class [TEMPLATE]","Dashboard","COMP ENG 3150 - Intro Micro Embed Design","MATH 3108 - Linear Algebra I","PHILOS 3225 - Engineering Ethics","COMP SCI 3610 - Intro Computer Networks","PHYSICS 2135 - Engineering Physics II"]}
 
 Tabs parsed from response:
 - Class [TEMPLATE]

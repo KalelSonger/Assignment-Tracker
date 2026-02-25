@@ -19,6 +19,13 @@ TABS_ACTION_VALUE = "tabs"
 SYNC_ACTION_VALUE = "sync_assignments"
 EXCLUDED_TAB_NAMES = {"dashboard", "class[template]"}
 
+SYNC_MODES = {
+	"1": {"name": "Sync all assignments", "include_past": True, "dry_run": False, "replace_existing": True},
+	"2": {"name": "Sync future assignments", "include_past": False, "dry_run": False, "replace_existing": True},
+	"3": {"name": "Dry-sync", "include_past": True, "dry_run": True, "replace_existing": True},
+	"4": {"name": "Exit", "include_past": False, "dry_run": False, "exit": True},
+}
+
 
 def _extract_next_link(link_header: str | None) -> str | None:
 	if not link_header:
@@ -250,52 +257,45 @@ def fetch_allowed_sheet_classes() -> list[str]:
 	return filtered_tabs
 
 
-def fetch_upcoming_assignments_with_login() -> dict[str, list[dict]]:
+def fetch_assignments_from_canvas_context(
+	context,
+	sheet_patterns: list[dict],
+	include_past_assignments: bool = False,
+) -> dict[str, list[dict]]:
 	courses_url = f"{CANVAS_BASE_URL}/api/v1/courses?per_page=100"
-	allowed_sheet_tabs = fetch_allowed_sheet_classes()
-	sheet_patterns = _build_sheet_class_patterns(allowed_sheet_tabs)
 
-	with sync_playwright() as playwright:
-		browser = playwright.chromium.launch(headless=False)
-		context = browser.new_context()
-		page = context.new_page()
+	print("Fetching courses...")
+	courses = _fetch_all_pages(context.request, courses_url)
+	print(f"Found {len(courses)} Canvas course entries total.")
 
-		_wait_for_login(context, page)
-		print("Fetching courses...")
+	matched_courses: list[tuple[int, str]] = []
+	for course in courses:
+		course_id = _parse_course_id(course.get("id"))
+		course_name = course.get("name")
+		if course_id is None or not isinstance(course_name, str):
+			continue
 
-		courses = _fetch_all_pages(context.request, courses_url)
-		print(f"Found {len(courses)} Canvas course entries total.")
+		matched_tab = _match_canvas_course_to_sheet_tab(course_name, sheet_patterns)
+		if matched_tab:
+			matched_courses.append((course_id, matched_tab))
 
-		matched_courses: list[tuple[int, str]] = []
-		for course in courses:
-			course_id = _parse_course_id(course.get("id"))
-			course_name = course.get("name")
-			if course_id is None or not isinstance(course_name, str):
-				continue
+	print(f"Matched {len(matched_courses)} Canvas courses to sheet tabs. Fetching assignments only for matched courses...")
 
-			matched_tab = _match_canvas_course_to_sheet_tab(course_name, sheet_patterns)
-			if matched_tab:
-				matched_courses.append((course_id, matched_tab))
+	assignments_by_course_id: dict[int, list[dict]] = {}
+	course_id_to_sheet_tab: dict[int, str] = {}
+	for course_id, matched_tab in matched_courses:
+		course_assignments_url = (
+			f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/assignments"
+			"?per_page=100&order_by=due_at"
+		)
+		try:
+			assignments_by_course_id[course_id] = _fetch_all_pages(context.request, course_assignments_url)
+			course_id_to_sheet_tab[course_id] = matched_tab
+		except RuntimeError as error:
+			print(f"Skipping course {course_id}: {error}")
+			continue
 
-		print(f"Matched {len(matched_courses)} Canvas courses to sheet tabs. Fetching assignments only for matched courses...")
-
-		assignments_by_course_id: dict[int, list[dict]] = {}
-		course_id_to_sheet_tab: dict[int, str] = {}
-		for course_id, matched_tab in matched_courses:
-			course_assignments_url = (
-				f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/assignments"
-				"?per_page=100&order_by=due_at"
-			)
-			try:
-				assignments_by_course_id[course_id] = _fetch_all_pages(context.request, course_assignments_url)
-				course_id_to_sheet_tab[course_id] = matched_tab
-			except RuntimeError as error:
-				print(f"Skipping course {course_id}: {error}")
-				continue
-
-		print(f"Finished fetching assignments for {len(assignments_by_course_id)} courses.")
-
-		browser.close()
+	print(f"Finished fetching assignments for {len(assignments_by_course_id)} courses.")
 
 	today_local = datetime.now().date()
 	course_names_by_id: dict[int, str] = {}
@@ -318,7 +318,7 @@ def fetch_upcoming_assignments_with_login() -> dict[str, list[dict]]:
 			normalized = due_at.replace("Z", "+00:00")
 			due_dt = datetime.fromisoformat(normalized)
 			due_local_date = due_dt.astimezone().date()
-			if due_local_date < today_local:
+			if not include_past_assignments and due_local_date < today_local:
 				continue
 
 			assignment_name = assignment.get("name") or ""
@@ -363,7 +363,11 @@ def _save_sync_response(payload: dict) -> None:
 		json.dump(payload, file, indent=2, ensure_ascii=False)
 
 
-def sync_assignments_to_sheet(data_by_class: dict[str, list[dict]]) -> dict:
+def sync_assignments_to_sheet(
+	data_by_class: dict[str, list[dict]],
+	dry_run: bool = False,
+	replace_existing: bool = False,
+) -> dict:
 	flat_records: list[dict] = []
 	for class_name, records in data_by_class.items():
 		for record in records:
@@ -378,7 +382,12 @@ def sync_assignments_to_sheet(data_by_class: dict[str, list[dict]]) -> dict:
 	payload = {
 		TABS_ACTION_PARAM: SYNC_ACTION_VALUE,
 		"records": json.dumps(flat_records),
+		"dryRun": "true" if dry_run else "false",
+		"replaceExisting": "true" if replace_existing else "false",
 	}
+	mode = "DRY RUN" if dry_run else "LIVE"
+	print(f"Sync mode: {mode}")
+	print(f"Replace existing rows: {'yes' if replace_existing else 'no'}")
 	print(f"Syncing {len(flat_records)} assignment rows to Google Sheet API...")
 	print(f"Using endpoint: {SHEET_API_URL}")
 	encoded_payload = urllib.parse.urlencode(payload).encode("utf-8")
@@ -401,21 +410,85 @@ def sync_assignments_to_sheet(data_by_class: dict[str, list[dict]]) -> dict:
 			f"Check deployment for: {SHEET_API_URL}"
 		)
 
+	if replace_existing and "replaceExisting" not in parsed:
+		_save_sync_response(parsed)
+		raise RuntimeError(
+			"Sheet API response is missing 'replaceExisting'. "
+			"Your deployed Apps Script is older than the full-refresh version. "
+			"Deploy a new Apps Script version with the latest GoogleSheetSync.gs and run again."
+		)
+
 	_save_sync_response(parsed)
 	return parsed
 
 
+def choose_sync_mode() -> dict:
+	print("\nSelect sync mode:")
+	print("1) Sync all assignments (past + future)")
+	print("2) Sync future assignments (today onward)")
+	print("3) Dry-sync (all assignments, no sheet writes)")
+	print("4) Exit")
+
+	while True:
+		choice = input("Enter 1, 2, 3, or 4: ").strip()
+		mode = SYNC_MODES.get(choice)
+		if mode:
+			print(f"Selected: {mode['name']}")
+			return mode
+		print("Invalid choice. Please enter 1, 2, 3, or 4.")
+
+
 def main() -> None:
 	try:
-		assignments_by_class = fetch_upcoming_assignments_with_login()
-		file_count = write_outputs_by_class(assignments_by_class, OUTPUT_DIR)
-		total_assignments = sum(len(records) for records in assignments_by_class.values())
-		print(f"Saved {total_assignments} assignments into {file_count} file(s) in '{OUTPUT_DIR}'.")
+		allowed_sheet_tabs = fetch_allowed_sheet_classes()
+		sheet_patterns = _build_sheet_class_patterns(allowed_sheet_tabs)
 
-		sync_response = sync_assignments_to_sheet(assignments_by_class)
-		print(f"Sheet sync response saved to {SHEET_SYNC_RESPONSE_FILE}")
-		print(f"Sheet sync status: {sync_response.get('status', 'unknown')}")
-		print(f"Rows written: {sync_response.get('rowsWritten', 0)}")
+		with sync_playwright() as playwright:
+			browser = playwright.chromium.launch(headless=False)
+			context = browser.new_context()
+			page = context.new_page()
+
+			_wait_for_login(context, page)
+
+			while True:
+				mode = choose_sync_mode()
+				if mode.get("exit"):
+					print("Ending session.")
+					break
+
+				include_past_assignments = mode["include_past"]
+				dry_run = mode["dry_run"]
+				replace_existing = mode.get("replace_existing", False)
+
+				assignments_by_class = fetch_assignments_from_canvas_context(
+					context,
+					sheet_patterns,
+					include_past_assignments=include_past_assignments,
+				)
+				file_count = write_outputs_by_class(assignments_by_class, OUTPUT_DIR)
+				total_assignments = sum(len(records) for records in assignments_by_class.values())
+				print(f"Saved {total_assignments} assignments into {file_count} file(s) in '{OUTPUT_DIR}'.")
+
+				sync_response = sync_assignments_to_sheet(
+					assignments_by_class,
+					dry_run=dry_run,
+					replace_existing=replace_existing,
+				)
+				print(f"Sheet sync response saved to {SHEET_SYNC_RESPONSE_FILE}")
+				print(f"Sheet sync status: {sync_response.get('status', 'unknown')}")
+				print(f"Rows written: {sync_response.get('rowsWritten', 0)}")
+				for class_name, stats in sync_response.get("classStats", {}).items():
+					print(
+						f"[{class_name}] incoming={stats.get('incomingCount', 0)} "
+						f"existing={stats.get('existingNamedCount', 0)} matched={stats.get('matchedCount', 0)} "
+						f"added={stats.get('addedCount', 0)} updated={stats.get('updatedCount', 0)}"
+					)
+				if sync_response.get("dryRun"):
+					print("Dry run mode: no spreadsheet changes were made.")
+				for message in sync_response.get("debugMessages", []):
+					print(message)
+
+			browser.close()
 	except json.JSONDecodeError:
 		print("Canvas returned invalid JSON.")
 	except Exception as error:

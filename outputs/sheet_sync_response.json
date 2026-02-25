@@ -1,5 +1,9 @@
 {
   "status": "success",
+  "spreadsheetId": "1nFUoOWcA7hQ6B_724h9rwMiE0fzUto9IU4nxHzdxXhI",
+  "spreadsheetName": "Testing Copy of Assignment Tracking Spring 2026",
+  "dryRun": false,
+  "replaceExisting": true,
   "updatedClasses": [
     "COMP ENG 3150 - Intro Micro Embed Design",
     "COMP SCI 3610 - Intro Computer Networks",
@@ -7,7 +11,52 @@
     "PHILOS 3225 - Engineering Ethics",
     "PHYSICS 2135 - Engineering Physics II"
   ],
-  "rowsWritten": 64,
+  "rowsWritten": 120,
+  "addedRows": 120,
+  "updatedRows": 0,
+  "classStats": {
+    "COMP ENG 3150 - Intro Micro Embed Design": {
+      "incomingCount": 20,
+      "existingNamedCount": 0,
+      "matchedCount": 0,
+      "addedCount": 20,
+      "updatedCount": 0,
+      "replaceMode": true
+    },
+    "COMP SCI 3610 - Intro Computer Networks": {
+      "incomingCount": 9,
+      "existingNamedCount": 0,
+      "matchedCount": 0,
+      "addedCount": 9,
+      "updatedCount": 0,
+      "replaceMode": true
+    },
+    "MATH 3108 - Linear Algebra I": {
+      "incomingCount": 32,
+      "existingNamedCount": 0,
+      "matchedCount": 0,
+      "addedCount": 32,
+      "updatedCount": 0,
+      "replaceMode": true
+    },
+    "PHILOS 3225 - Engineering Ethics": {
+      "incomingCount": 7,
+      "existingNamedCount": 0,
+      "matchedCount": 0,
+      "addedCount": 7,
+      "updatedCount": 0,
+      "replaceMode": true
+    },
+    "PHYSICS 2135 - Engineering Physics II": {
+      "incomingCount": 52,
+      "existingNamedCount": 0,
+      "matchedCount": 0,
+      "addedCount": 52,
+      "updatedCount": 0,
+      "replaceMode": true
+    }
+  },
+  "debugMessages": [],
   "requestedClasses": [
     "COMP ENG 3150 - Intro Micro Embed Design",
     "COMP SCI 3610 - Intro Computer Networks",
