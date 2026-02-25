@@ -1,0 +1,28 @@
+Sheet class debug output
+========================
+
+Raw API response:
+{"status":"success","tabs":["Class [TEMPLATE]","Dashboard","COMP ENG 3150 - Intro Micro Embed Design","MATH 3108 - Linear Algebra I","PHILOS 3225 - Engineering Ethics","COMP SCI 3610 - Intro Computer Networks","PHYSICS 2135 - Engineering Physics II"]}
+
+Tabs parsed from response:
+- Class [TEMPLATE]
+- Dashboard
+- COMP ENG 3150 - Intro Micro Embed Design
+- MATH 3108 - Linear Algebra I
+- PHILOS 3225 - Engineering Ethics
+- COMP SCI 3610 - Intro Computer Networks
+- PHYSICS 2135 - Engineering Physics II
+
+Tabs after excluding dashboard/class[template]:
+- COMP ENG 3150 - Intro Micro Embed Design
+- MATH 3108 - Linear Algebra I
+- PHILOS 3225 - Engineering Ethics
+- COMP SCI 3610 - Intro Computer Networks
+- PHYSICS 2135 - Engineering Physics II
+
+Normalized names used for matching:
+- comp eng 3150 - intro micro embed design
+- comp sci 3610 - intro computer networks
+- math 3108 - linear algebra i
+- philos 3225 - engineering ethics
+- physics 2135 - engineering physics ii
