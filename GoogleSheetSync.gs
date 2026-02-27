@@ -1,4 +1,4 @@
-const doc = SpreadsheetApp.openById("1nFUoOWcA7hQ6B_724h9rwMiE0fzUto9IU4nxHzdxXhI");
+const doc = SpreadsheetApp.openById("[INSERT PERSONAL SHEET ID HERE]");
 const EXCLUDED_TAB_NAMES = new Set(["dashboard", "class[template]"]);
 
 function doPost(e) {

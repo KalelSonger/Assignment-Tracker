@@ -4,7 +4,7 @@ import sys
 import ast
 
 
-DEFAULT_SHEET_API_URL = ""
+DEFAULT_SHEET_API_URL = "[INSERT GOOGLE SCRIPT WEB APP URL HERE]"
 DEFAULT_CANVAS_BASE_URL = "https://umsystem.instructure.com"
 
 
