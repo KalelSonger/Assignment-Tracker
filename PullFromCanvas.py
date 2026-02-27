@@ -17,12 +17,14 @@ SHEET_SYNC_RESPONSE_FILE = os.path.join(OUTPUT_DIR, "sheet_sync_response.json")
 TABS_ACTION_PARAM = "action"
 TABS_ACTION_VALUE = "tabs"
 SYNC_ACTION_VALUE = "sync_assignments"
+CLEAR_ALL_TABS_ACTION_VALUE = "clear_all_class_tabs"
+CLEAR_ONE_TAB_ACTION_VALUE = "clear_class_tab"
 EXCLUDED_TAB_NAMES = {"dashboard", "class[template]"}
 
 SYNC_MODES = {
-	"1": {"name": "Sync all assignments", "include_past": True, "dry_run": False, "replace_existing": True},
-	"2": {"name": "Sync future assignments", "include_past": False, "dry_run": False, "replace_existing": True},
-	"3": {"name": "Dry-sync", "include_past": True, "dry_run": True, "replace_existing": True},
+	"1": {"name": "Sync all assignments", "include_past": True, "dry_run": False, "replace_existing": False},
+	"2": {"name": "Sync future assignments", "include_past": False, "dry_run": False, "replace_existing": False},
+	"3": {"name": "Dry-sync", "include_past": True, "dry_run": True, "replace_existing": False},
 	"4": {"name": "Exit", "include_past": False, "dry_run": False, "exit": True},
 }
 
@@ -67,23 +69,26 @@ def _is_canvas_authenticated(api_context) -> bool:
 	return response.ok
 
 
-def _wait_for_login(context, page) -> None:
+def _wait_for_login(context, page, timeout_seconds: int = 300, poll_interval_ms: int = 1500) -> None:
 	if _is_canvas_authenticated(context.request):
 		print("Canvas session already authenticated.")
 		return
 
 	print("Opening UMSYSTEM Canvas login...")
-	page.goto(LOGIN_URL, wait_until="domcontentloaded")
+	page.goto(LOGIN_URL, wait_until="domcontentloaded")	
+	print("Complete Microsoft sign-in in the browser window. Waiting for automatic login detection...")
 
-	max_attempts = 4
-	for attempt in range(1, max_attempts + 1):
-		input("Complete Microsoft sign-in in the browser, then press Enter to continue...")
+	started = datetime.now()
+	while (datetime.now() - started).total_seconds() < timeout_seconds:
 		if _is_canvas_authenticated(context.request):
 			print("Login detected. Continuing...")
 			return
-		print(f"Login not detected yet (attempt {attempt}/{max_attempts}).")
+		page.wait_for_timeout(poll_interval_ms)
 
-	raise RuntimeError("Still not authenticated to Canvas. Confirm login completed in the browser and try again.")
+	raise RuntimeError(
+		"Timed out waiting for Canvas authentication. "
+		"Confirm sign-in completed in the browser, then run again."
+	)
 
 
 def _sanitize_filename(value: str) -> str:
@@ -361,6 +366,45 @@ def _save_sync_response(payload: dict) -> None:
 	os.makedirs(OUTPUT_DIR, exist_ok=True)
 	with open(SHEET_SYNC_RESPONSE_FILE, "w", encoding="utf-8") as file:
 		json.dump(payload, file, indent=2, ensure_ascii=False)
+
+
+def _post_sheet_action(action: str, extra_payload: dict | None = None, timeout: int = 60) -> dict:
+	payload = {TABS_ACTION_PARAM: action}
+	if extra_payload:
+		payload.update(extra_payload)
+
+	encoded_payload = urllib.parse.urlencode(payload).encode("utf-8")
+	request = urllib.request.Request(SHEET_API_URL, data=encoded_payload, method="POST")
+	request.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+	with urllib.request.urlopen(request, timeout=timeout) as response:
+		raw = response.read().decode("utf-8")
+
+	try:
+		parsed = json.loads(raw)
+	except json.JSONDecodeError:
+		parsed = {"status": "unknown", "raw_response": raw}
+
+	if not isinstance(parsed, dict):
+		raise RuntimeError("Sheet API returned an invalid response format.")
+
+	if parsed.get("status") not in {"success", "ok"}:
+		raise RuntimeError(parsed.get("message") or f"Sheet API action '{action}' failed.")
+
+	return parsed
+
+
+def clear_all_class_tabs() -> dict:
+	response = _post_sheet_action(CLEAR_ALL_TABS_ACTION_VALUE)
+	return response
+
+
+def clear_single_class_tab(class_name: str) -> dict:
+	name = str(class_name or "").strip()
+	if not name:
+		raise RuntimeError("class_name is required to clear a single tab.")
+	response = _post_sheet_action(CLEAR_ONE_TAB_ACTION_VALUE, {"className": name})
+	return response
 
 
 def sync_assignments_to_sheet(

@@ -60,6 +60,14 @@ Quick setup:
 
 After updating `keys.local.json`, just run the EXE again (no rebuild required).
 
+EXE runtime config priority:
+1) `keys.local.json` (next to EXE, then current working directory)
+2) external `keys.py` (next to EXE or current working directory, only `SHEET_API_URL` and `CANVAS_BASE_URL` constants)
+3) environment variables
+4) built-in defaults from the EXE build
+
+At startup, the GUI log shows `Config source:` and `Sheet API URL:` so you can verify exactly which value is being used.
+
 ## Repository Cleanup Notes
 
 Generated/runtime files are ignored by git:

@@ -1,4 +1,5 @@
 const doc = SpreadsheetApp.openById("1nFUoOWcA7hQ6B_724h9rwMiE0fzUto9IU4nxHzdxXhI");
+const EXCLUDED_TAB_NAMES = new Set(["dashboard", "class[template]"]);
 
 function doPost(e) {
   const action = ((e && e.parameter && e.parameter.action) || "").toLowerCase();
@@ -44,6 +45,57 @@ function doPost(e) {
       spreadsheetName: doc.getName(),
       maxRows: safeMaxRows,
       sheets: dump,
+    });
+  }
+
+  if (action === "clear_all_class_tabs") {
+    const clearedTabs = [];
+    let clearedRows = 0;
+
+    const sheets = doc.getSheets();
+    for (const sheet of sheets) {
+      const sheetName = sheet.getName();
+      if (isExcludedTabName(sheetName)) {
+        continue;
+      }
+
+      const classClearedRows = clearSheetAssignmentColumns(sheet);
+      clearedRows += classClearedRows;
+      clearedTabs.push({
+        sheetName,
+        clearedRows: classClearedRows,
+      });
+    }
+
+    return jsonResponse({
+      status: "success",
+      spreadsheetId: doc.getId(),
+      spreadsheetName: doc.getName(),
+      action: "clear_all_class_tabs",
+      clearedRows,
+      clearedTabs,
+    });
+  }
+
+  if (action === "clear_class_tab") {
+    const className = String((e && e.parameter && e.parameter.className) || "").trim();
+    if (!className) {
+      return jsonResponse({ status: "error", message: "className is required" });
+    }
+
+    const sheet = doc.getSheetByName(className);
+    if (!sheet) {
+      return jsonResponse({ status: "error", message: `Sheet not found: ${className}` });
+    }
+
+    const classClearedRows = clearSheetAssignmentColumns(sheet);
+    return jsonResponse({
+      status: "success",
+      spreadsheetId: doc.getId(),
+      spreadsheetName: doc.getName(),
+      action: "clear_class_tab",
+      className,
+      clearedRows: classClearedRows,
     });
   }
 
@@ -228,6 +280,25 @@ function doPost(e) {
     spreadsheetName: doc.getName(),
     text: textValue,
   });
+}
+
+function compactName(value) {
+  return String(value || "").replace(/\s+/g, "").toLowerCase();
+}
+
+function isExcludedTabName(name) {
+  return EXCLUDED_TAB_NAMES.has(compactName(name));
+}
+
+function clearSheetAssignmentColumns(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const clearCount = lastRow - 1;
+  sheet.getRange(2, 1, clearCount, 1).clearContent();
+  sheet.getRange(2, 2, clearCount, 1).clearContent();
+  sheet.getRange(2, 4, clearCount, 1).clearContent();
+  return clearCount;
 }
 
 function findBestMatchingRow(existingRows, assignmentName) {

@@ -36,7 +36,8 @@ $args = @(
     "-m", "PyInstaller",
     "--onefile",
     "--windowed",
-    "--name", "AssignmentTrackerGUI"
+    "--name", "AssignmentTrackerGUI",
+    "--add-data", "app.ico;."
 )
 
 $iconPath = Join-Path $PSScriptRoot "app.ico"
