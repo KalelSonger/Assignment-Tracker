@@ -3,6 +3,8 @@ outputs/
 build/
 dist/
 __pycache__/
+write_response.json
+canvas_upcoming_assignments.json
 *.pyc
 *.pyo
 *.pyd
