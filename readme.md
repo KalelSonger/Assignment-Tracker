@@ -112,10 +112,10 @@ You should then see the deployment details page:
 
 ## Spreadsheet color behavior
 
-- Dark red: due today or overdue.
-- Light red: due within 3 days.
-- Yellow: due within 1 week.
-- Green: due later than 1 week.
+- <span style="color:#8B0000;"><strong>Dark red</strong></span>: due today or overdue.
+- <span style="color:#FF6B6B;"><strong>Light red</strong></span>: due within 3 days.
+- <span style="color:#D4A017;"><strong>Yellow</strong></span>: due within 1 week.
+- <span style="color:#228B22;"><strong>Green</strong></span>: due later than 1 week.
 - Assignment cells can also be color-coded by keywords in your trackers section (example: `Exam`).
 
 ![Tracker keyword color example](images%20for%20readme/image-19.png)
