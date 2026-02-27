@@ -1,1 +1,14 @@
+keys.local.json
+outputs/
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+*.spec
+
+# keep local secrets out of git
 keys.py
