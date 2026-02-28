@@ -104,6 +104,31 @@ def _parse_course_id(raw_course_id) -> int | None:
 	return None
 
 
+def _parse_canvas_datetime(raw_value: str | None) -> datetime | None:
+	if not isinstance(raw_value, str) or not raw_value.strip():
+		return None
+
+	try:
+		return datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+	except ValueError:
+		return None
+
+
+def _is_current_canvas_course(course: dict) -> bool:
+	workflow_state = str(course.get("workflow_state") or "").strip().lower()
+	if workflow_state and workflow_state != "available":
+		return False
+
+	if course.get("access_restricted_by_date") is True:
+		return False
+
+	end_at = _parse_canvas_datetime(course.get("end_at"))
+	if end_at is not None and end_at.astimezone() < datetime.now().astimezone():
+		return False
+
+	return True
+
+
 def _normalize_name(value: str) -> str:
 	return re.sub(r"\s+", " ", value).strip().casefold()
 
@@ -267,14 +292,19 @@ def fetch_assignments_from_canvas_context(
 	sheet_patterns: list[dict],
 	include_past_assignments: bool = False,
 ) -> dict[str, list[dict]]:
-	courses_url = f"{CANVAS_BASE_URL}/api/v1/courses?per_page=100"
+	courses_url = (
+		f"{CANVAS_BASE_URL}/api/v1/courses"
+		"?per_page=100&enrollment_state=active&state[]=available"
+	)
 
 	print("Fetching courses...")
 	courses = _fetch_all_pages(context.request, courses_url)
+	current_courses = [course for course in courses if isinstance(course, dict) and _is_current_canvas_course(course)]
 	print(f"Found {len(courses)} Canvas course entries total.")
+	print(f"Retained {len(current_courses)} current/active courses after filtering.")
 
 	matched_courses: list[tuple[int, str]] = []
-	for course in courses:
+	for course in current_courses:
 		course_id = _parse_course_id(course.get("id"))
 		course_name = course.get("name")
 		if course_id is None or not isinstance(course_name, str):
@@ -304,7 +334,7 @@ def fetch_assignments_from_canvas_context(
 
 	today_local = datetime.now().date()
 	course_names_by_id: dict[int, str] = {}
-	for course in courses:
+	for course in current_courses:
 		course_id = _parse_course_id(course.get("id"))
 		course_name = course.get("name")
 		if course_id is not None and isinstance(course_name, str) and course_name:
