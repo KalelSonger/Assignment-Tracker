@@ -11,6 +11,7 @@ canvas_upcoming_assignments.json
 .venv/
 .pytest_cache/
 *.spec
+build_exe.ps1
 
 # keep local secrets out of git
 keys.py
