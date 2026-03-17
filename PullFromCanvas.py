@@ -14,6 +14,7 @@ LOGIN_URL = f"{CANVAS_BASE_URL}/login/saml"
 OUTPUT_DIR = "outputs"
 SHEET_CLASSES_DEBUG_FILE = os.path.join(OUTPUT_DIR, "sheet_classes_debug.txt")
 SHEET_SYNC_RESPONSE_FILE = os.path.join(OUTPUT_DIR, "sheet_sync_response.json")
+CANVAS_ASSIGNMENTS_DEBUG_FILE = os.path.join(OUTPUT_DIR, "canvas_assignments_debug.json")
 TABS_ACTION_PARAM = "action"
 TABS_ACTION_VALUE = "tabs"
 SYNC_ACTION_VALUE = "sync_assignments"
@@ -321,11 +322,22 @@ def fetch_assignments_from_canvas_context(
 	for course_id, matched_tab in matched_courses:
 		course_assignments_url = (
 			f"{CANVAS_BASE_URL}/api/v1/courses/{course_id}/assignments"
-			"?per_page=100&order_by=due_at"
+			"?per_page=100&order_by=due_at&include=all_dates"
 		)
 		try:
-			assignments_by_course_id[course_id] = _fetch_all_pages(context.request, course_assignments_url)
+			all_assignments = _fetch_all_pages(context.request, course_assignments_url)
+			assignments_by_course_id[course_id] = all_assignments
 			course_id_to_sheet_tab[course_id] = matched_tab
+			print(f"  Course {course_id} ({matched_tab}): fetched {len(all_assignments)} assignments")
+			
+			# Debug: show assignments without due_at
+			missing_due_date = [a for a in all_assignments if not a.get("due_at")]
+			if missing_due_date:
+				print(f"    Warning: {len(missing_due_date)} assignments have no due_at date:")
+				for a in missing_due_date[:5]:
+					print(f"      - {a.get('name', 'Unknown')}")
+				if len(missing_due_date) > 5:
+					print(f"      ... and {len(missing_due_date) - 5} more")
 		except RuntimeError as error:
 			print(f"Skipping course {course_id}: {error}")
 			continue
@@ -340,20 +352,47 @@ def fetch_assignments_from_canvas_context(
 		if course_id is not None and isinstance(course_name, str) and course_name:
 			course_names_by_id[course_id] = course_name
 
+	# Debug: save detailed Canvas assignments data
+	debug_data = {}
+	for course_id, assignments in assignments_by_course_id.items():
+		class_name = course_id_to_sheet_tab.get(course_id, course_names_by_id.get(course_id, f"Course {course_id}"))
+		debug_data[class_name] = [
+			{
+				"name": a.get("name"),
+				"due_at": a.get("due_at"),
+				"submission_types": a.get("submission_types"),
+				"published": a.get("published"),
+				"unpublishable": a.get("unpublishable"),
+				"id": a.get("id"),
+				"html_url": a.get("html_url"),
+				"description": a.get("description", "")[:100] if a.get("description") else "",
+			}
+			for a in assignments
+		]
+	
+	os.makedirs(OUTPUT_DIR, exist_ok=True)
+	with open(CANVAS_ASSIGNMENTS_DEBUG_FILE, "w", encoding="utf-8") as f:
+		json.dump(debug_data, f, indent=2, default=str)
+	print(f"Wrote Canvas API response to {CANVAS_ASSIGNMENTS_DEBUG_FILE}")
+
 	output_by_class: dict[str, list[dict]] = {}
 
 	for course_id, assignments in assignments_by_course_id.items():
 		class_name = course_id_to_sheet_tab.get(course_id, course_names_by_id.get(course_id, f"Course {course_id}"))
+		skipped_no_due_date = 0
+		skipped_past_date = 0
 
 		for assignment in assignments:
 			due_at = assignment.get("due_at")
 			if not due_at:
+				skipped_no_due_date += 1
 				continue
 
 			normalized = due_at.replace("Z", "+00:00")
 			due_dt = datetime.fromisoformat(normalized)
 			due_local_date = due_dt.astimezone().date()
 			if not include_past_assignments and due_local_date < today_local:
+				skipped_past_date += 1
 				continue
 
 			assignment_name = assignment.get("name") or ""
@@ -364,6 +403,16 @@ def fetch_assignments_from_canvas_context(
 			}
 
 			output_by_class.setdefault(class_name, []).append(record)
+		
+		# Debug output
+		total_for_class = len([a for a in assignments if a.get("due_at")])
+		synced_count = len(output_by_class.get(class_name, []))
+		print(f"  {class_name}: syncing {synced_count}/{total_for_class} assignments", end="")
+		if skipped_no_due_date:
+			print(f" (skipped {skipped_no_due_date} without due dates)", end="")
+		if skipped_past_date:
+			print(f" (skipped {skipped_past_date} past due)", end="")
+		print()
 
 
 	for class_name, records in output_by_class.items():
