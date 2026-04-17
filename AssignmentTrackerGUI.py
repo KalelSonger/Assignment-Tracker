@@ -15,7 +15,7 @@ from tkinter import messagebox, ttk
 
 from keys import CONFIG_SOURCE, SHEET_API_URL
 
-
+STORAGE_STATE_FILE = "playwright_state.json" + ".tmp"
 SINGLE_INSTANCE_HOST = "127.0.0.1"
 SINGLE_INSTANCE_PORT = 48523
 
@@ -366,9 +366,20 @@ class AssignmentTrackerGUI(tk.Tk):
                 f"Launch details:\n{error_text}"
             )
 
-        self.context = self.browser.new_context()
+        if os.path.exists(STORAGE_STATE_FILE):
+            self._log("Loading saved Canvas session...")
+            self.context = self.browser.new_context(storage_state=STORAGE_STATE_FILE)
+        else:
+            self._log("No saved session found. Starting fresh...")
+            self.context = self.browser.new_context()
         self.page = self.context.new_page()
-        self.page.goto(self.backend.LOGIN_URL, wait_until="domcontentloaded")
+        self.page = self.context.new_page()
+
+        if not self.backend._is_canvas_authenticated(self.context.request):
+            self.page.goto(self.backend.LOGIN_URL, wait_until="domcontentloaded")
+            self._log(f"{launched_with.capitalize()} opened. Complete Canvas/Microsoft sign-in.")
+        else:
+            self._log("Already authenticated via saved session.")
         self._log(f"{launched_with.capitalize()} opened. Complete Canvas/Microsoft sign-in in that window.")
 
     def _wait_for_login_status(self, timeout_seconds: int = 300, poll_interval_seconds: float = 1.5):
@@ -377,7 +388,13 @@ class AssignmentTrackerGUI(tk.Tk):
 
         while (time.monotonic() - started) < timeout_seconds:
             if self.backend._is_canvas_authenticated(self.context.request):
+                # Save to disk (persistent)
+                self.context.storage_state(path=STORAGE_STATE_FILE)
+
+                # Keep in memory (your existing flow)
                 self.storage_state = self.context.storage_state()
+
+                self._log(f"Session saved to {STORAGE_STATE_FILE}")
                 self._set_status("Signed in. Ready to sync.")
                 self._set_login_hint("Sign-in detected.")
                 self._log("Canvas sign-in detected.")
