@@ -103,6 +103,7 @@ You should then see the deployment details page:
 - `DEFAULT_CANVAS_BASE_URL` is set to `https://umsystem.instructure.com` by default.
 - If your school uses a different Canvas domain, replace it with your school’s Canvas base URL.
 - Other Canvas architectures are not fully tested.
+- You can add multiple spreadsheets to the top-right dropdown by adding different sheet URLs, then switch between them from that dropdown.
 
 ## Spreadsheet color behavior
 
