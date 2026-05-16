@@ -1,4 +1,4 @@
-const doc = SpreadsheetApp.openById("YOUR_SPREADSHEET_ID");
+const doc = SpreadsheetApp.openById("1tuQ3PIMWRAFauabJhG8XtKLSz_4WDQYnZtVi6zAe8rM");
 const EXCLUDED_TAB_NAMES = new Set(["dashboard", "class[template]"]);
 
 function doPost(e) {

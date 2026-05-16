@@ -1,4 +1,6 @@
 keys.local.json
+sheet_endpoints.local.json
+canvas_session.local.json
 outputs/
 build/
 dist/outputs

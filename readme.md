@@ -82,25 +82,19 @@ You should then see the deployment details page:
 
 ![Deployment details page](images%20for%20readme/image-14.png)
 
-### 3) Configure the desktop app
-
-14. Copy the deployed web app URL and open `keys.py`.
-
-![Open keys.py](images%20for%20readme/image-15.png)
-
-15. Set `DEFAULT_SHEET_API_URL` to the deployed web app URL.
-
-![Paste web app URL into keys.py](images%20for%20readme/image-16.png)
-
 ## Run the app
 
 1. Open the `dist` folder.
 2. Run `AssignmentTrackerGUI.exe`.
 3. On first launch, dependencies may install automatically.
-4. Sign in to Canvas when the browser opens.
-5. Return to the GUI and run sync.
+4. Add your copied Web App URL to the field in the top-right of the GUI, then click **Add**.
 
-![Assignment Tracker GUI](images%20for%20readme/image-17.png)
+![Add sheet URL in GUI](images%20for%20readme/image-20.png)
+
+5. Sign in to Canvas when the browser opens. This will need to be refreshed about once a month.
+6. Return to the GUI and run sync.
+
+![Assignment Tracker GUI](images%20for%20readme/image-21.png)
 
 ![Spreadsheet after sync](images%20for%20readme/image-18.png)
 

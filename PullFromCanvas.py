@@ -11,6 +11,7 @@ from keys import CANVAS_BASE_URL, SHEET_API_URL
 
 
 LOGIN_URL = f"{CANVAS_BASE_URL}/login/saml"
+CURRENT_SHEET_API_URL = SHEET_API_URL
 OUTPUT_DIR = "outputs"
 SHEET_CLASSES_DEBUG_FILE = os.path.join(OUTPUT_DIR, "sheet_classes_debug.txt")
 SHEET_SYNC_RESPONSE_FILE = os.path.join(OUTPUT_DIR, "sheet_sync_response.json")
@@ -21,6 +22,18 @@ SYNC_ACTION_VALUE = "sync_assignments"
 CLEAR_ALL_TABS_ACTION_VALUE = "clear_all_class_tabs"
 CLEAR_ONE_TAB_ACTION_VALUE = "clear_class_tab"
 EXCLUDED_TAB_NAMES = {"dashboard", "class[template]"}
+
+
+def set_sheet_api_url(api_url: str) -> None:
+	global CURRENT_SHEET_API_URL
+	cleaned = str(api_url or "").strip()
+	if not cleaned:
+		raise RuntimeError("Sheet API URL cannot be empty.")
+	CURRENT_SHEET_API_URL = cleaned
+
+
+def get_sheet_api_url() -> str:
+	return CURRENT_SHEET_API_URL
 
 SYNC_MODES = {
 	"1": {"name": "Sync all assignments", "include_past": True, "dry_run": False, "replace_existing": False},
@@ -260,7 +273,7 @@ def _write_sheet_classes_debug(raw_response: str, tab_names: list[str], filtered
 def fetch_allowed_sheet_classes() -> list[str]:
 	payload = {TABS_ACTION_PARAM: TABS_ACTION_VALUE}
 	encoded_payload = urllib.parse.urlencode(payload).encode("utf-8")
-	request = urllib.request.Request(SHEET_API_URL, data=encoded_payload, method="POST")
+	request = urllib.request.Request(CURRENT_SHEET_API_URL, data=encoded_payload, method="POST")
 	request.add_header("Content-Type", "application/x-www-form-urlencoded")
 
 	with urllib.request.urlopen(request, timeout=30) as response:
@@ -453,7 +466,7 @@ def _post_sheet_action(action: str, extra_payload: dict | None = None, timeout: 
 		payload.update(extra_payload)
 
 	encoded_payload = urllib.parse.urlencode(payload).encode("utf-8")
-	request = urllib.request.Request(SHEET_API_URL, data=encoded_payload, method="POST")
+	request = urllib.request.Request(CURRENT_SHEET_API_URL, data=encoded_payload, method="POST")
 	request.add_header("Content-Type", "application/x-www-form-urlencoded")
 
 	with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -512,9 +525,9 @@ def sync_assignments_to_sheet(
 	print(f"Sync mode: {mode}")
 	print(f"Replace existing rows: {'yes' if replace_existing else 'no'}")
 	print(f"Syncing {len(flat_records)} assignment rows to Google Sheet API...")
-	print(f"Using endpoint: {SHEET_API_URL}")
+	print(f"Using endpoint: {CURRENT_SHEET_API_URL}")
 	encoded_payload = urllib.parse.urlencode(payload).encode("utf-8")
-	request = urllib.request.Request(SHEET_API_URL, data=encoded_payload, method="POST")
+	request = urllib.request.Request(CURRENT_SHEET_API_URL, data=encoded_payload, method="POST")
 	request.add_header("Content-Type", "application/x-www-form-urlencoded")
 
 	with urllib.request.urlopen(request, timeout=60) as response:
@@ -530,7 +543,7 @@ def sync_assignments_to_sheet(
 		raise RuntimeError(
 			"Sheet API did not return sync details (expected key 'rowsWritten'). "
 			"This usually means the deployed Apps Script URL does not include the sync_assignments handler yet. "
-			f"Check deployment for: {SHEET_API_URL}"
+			f"Check deployment for: {CURRENT_SHEET_API_URL}"
 		)
 
 	if replace_existing and "replaceExisting" not in parsed:
