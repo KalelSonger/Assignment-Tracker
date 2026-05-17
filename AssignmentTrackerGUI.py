@@ -1,7 +1,9 @@
 import importlib.util
+import base64
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -13,17 +15,33 @@ import urllib.request
 import ctypes
 from contextlib import redirect_stderr, redirect_stdout
 
+try:
+    import winreg
+except Exception:
+    winreg = None
+
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from keys import CONFIG_SOURCE
+
+try:
+    import resvg_py
+except Exception:
+    resvg_py = None
 
 
 SINGLE_INSTANCE_HOST = "127.0.0.1"
 SINGLE_INSTANCE_PORT = 48523
 CANVAS_SESSION_FILE = "canvas_session.local.json"
 SHEET_ENDPOINTS_FILE = "sheet_endpoints.local.json"
+APP_SETTINGS_FILE = "app_settings.local.json"
 SHEET_URL_PLACEHOLDER = "add sheet url here"
+DEFAULT_APP_SETTINGS = {
+    "auto_sync_on_startup": False,
+    "run_on_windows_startup": False,
+    "theme": "system",
+}
 
 
 class SingleInstanceGuard:
@@ -99,13 +117,35 @@ class AssignmentTrackerGUI(tk.Tk):
         self.top_controls_notice_var = tk.StringVar(value="")
         self.sync_running = False
         self.backend = None
+        self.app_settings = dict(DEFAULT_APP_SETTINGS)
+        self.settings_auto_sync_var = tk.BooleanVar(value=False)
+        self.settings_startup_app_var = tk.BooleanVar(value=False)
+        self.settings_theme_var = tk.StringVar(value="light")
+        self.theme_palette = {
+            "bg": "#f2f2f2",
+            "button_bg": "#e8e8e8",
+            "accent": "#1f6fff",
+            "normal_input_fg": "#000000",
+            "placeholder_fg": "#777777",
+            "muted_fg": "#444444",
+        }
+        self.settings_button = None
+        self.settings_button_icon = None
+        self.settings_tooltip = None
+        self.add_sheet_button = None
+        self.settings_window = None
+        self.settings_theme_combo = None
+        self.settings_theme_label_var = tk.StringVar(value="Light theme")
 
         self.state_dir = self._state_dir()
         self.canvas_session_path = os.path.join(self.state_dir, CANVAS_SESSION_FILE)
         self.sheet_endpoints_path = os.path.join(self.state_dir, SHEET_ENDPOINTS_FILE)
+        self.app_settings_path = os.path.join(self.state_dir, APP_SETTINGS_FILE)
         self._ensure_local_state_files()
+        self._load_app_settings()
 
         self._build_ui()
+        self._apply_theme()
         self.after(100, self._drain_logs)
 
         threading.Thread(target=self._bootstrap_and_start_login, daemon=True).start()
@@ -190,6 +230,562 @@ class AssignmentTrackerGUI(tk.Tk):
 
         self._show_login_panel()
 
+    def _open_settings_window(self):
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.deiconify()
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+            return
+
+        self.settings_window = tk.Toplevel(self)
+        self.settings_window.title("Settings")
+        self.settings_window.geometry("420x250")
+        self.settings_window.resizable(False, False)
+        self.settings_window.transient(self)
+        self.settings_window.protocol("WM_DELETE_WINDOW", self._close_settings_window)
+
+        container = ttk.Frame(self.settings_window, padding=14)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=1)
+        container.columnconfigure(1, weight=1)
+
+        ttk.Label(container, text="Startup", font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+
+        ttk.Checkbutton(
+            container,
+            text="Auto sync on startup",
+            variable=self.settings_auto_sync_var,
+            command=self._on_toggle_auto_sync,
+            style="Settings.TCheckbutton",
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
+
+        ttk.Checkbutton(
+            container,
+            text="Run as Windows startup app",
+            variable=self.settings_startup_app_var,
+            command=self._on_toggle_windows_startup,
+            style="Settings.TCheckbutton",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        ttk.Separator(container, orient="horizontal").grid(row=3, column=0, columnspan=2, sticky="ew", pady=12)
+
+        ttk.Label(container, text="Appearance", font=("Segoe UI", 10, "bold")).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+
+        ttk.Label(container, text="Program theme:").grid(row=5, column=0, sticky="w", padx=(0, 8))
+        self.settings_theme_label_var.set(self._theme_to_label(self.settings_theme_var.get()))
+        self.settings_theme_combo = ttk.Combobox(
+            container,
+            textvariable=self.settings_theme_label_var,
+            values=("System default", "Light theme", "Dark theme", "Coral theme"),
+            state="readonly",
+            width=20,
+        )
+        self.settings_theme_combo.grid(row=5, column=1, sticky="w")
+        self.settings_theme_combo.bind("<<ComboboxSelected>>", self._on_theme_combo_selected)
+
+        ttk.Button(container, text="Close", command=self._close_settings_window, width=12).grid(
+            row=6, column=1, sticky="e", pady=(18, 0)
+        )
+
+        self._apply_theme()
+        self.settings_window.lift()
+        self.settings_window.focus_force()
+
+    def _close_settings_window(self):
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
+        self.settings_window = None
+        self.settings_theme_combo = None
+
+    def _theme_to_label(self, theme_name: str) -> str:
+        normalized = str(theme_name or "").strip().lower()
+        if normalized == "system":
+            return "System default"
+        if normalized == "coral":
+            return "Coral theme"
+        if normalized == "dark":
+            return "Dark theme"
+        return "Light theme"
+
+    def _label_to_theme(self, label: str) -> str:
+        normalized = str(label or "").strip().lower()
+        if normalized.startswith("system"):
+            return "system"
+        if normalized.startswith("coral"):
+            return "coral"
+        if normalized.startswith("dark"):
+            return "dark"
+        return "light"
+
+    def _detect_system_theme(self) -> str:
+        if os.name != "nt":
+            return "light"
+
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            ) as key:
+                apps_use_light, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+                return "light" if int(apps_use_light) == 1 else "dark"
+        except Exception:
+            return "light"
+
+    def _on_theme_combo_selected(self, _event=None):
+        selected_theme = self._label_to_theme(self.settings_theme_label_var.get())
+        self.settings_theme_var.set(selected_theme)
+        self._on_theme_selected()
+
+    def _settings_svg_path(self) -> str | None:
+        candidates = []
+
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(os.path.join(sys._MEIPASS, "settings.svg"))
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.extend(
+            [
+                os.path.join(script_dir, "settings.svg"),
+                os.path.join(os.getcwd(), "settings.svg"),
+            ]
+        )
+
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+
+        return None
+
+    def _render_settings_svg_icon(self, accent_hex: str, icon_size: int = 18):
+        global resvg_py
+
+        svg_path = self._settings_svg_path()
+        if not svg_path:
+            return None
+
+        try:
+            with open(svg_path, "r", encoding="utf-8") as file:
+                svg_text = file.read()
+        except Exception:
+            return None
+
+        # Recolor common black values to the active accent color for theme-sync icon tinting.
+        recolored_svg = re.sub(
+            r"(#000000|#000\b|black\b|rgb\(0\s*,\s*0\s*,\s*0\))",
+            accent_hex,
+            svg_text,
+            flags=re.IGNORECASE,
+        )
+
+        try:
+            if resvg_py is None:
+                resvg_py = importlib.import_module("resvg_py")
+
+            png_bytes = resvg_py.svg_to_bytes(
+                svg_string=recolored_svg,
+                width=icon_size,
+                height=icon_size,
+            )
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            return tk.PhotoImage(data=encoded)
+        except Exception:
+            return None
+
+    def _update_settings_button_visual(self, hover: bool = False):
+        if self.settings_button is None:
+            return
+
+        palette = self.theme_palette
+        accent = palette.get("accent", "#1f6fff")
+        button_bg = palette.get("button_bg", "#e8e8e8")
+        icon_size = 16
+        if self.add_sheet_button is not None and self.add_sheet_button.winfo_exists():
+            base_height = max(self.add_sheet_button.winfo_height(), self.add_sheet_button.winfo_reqheight())
+            if base_height:
+                icon_size = max(14, min(22, int(base_height) - 4))
+
+        icon = self._render_settings_svg_icon("#ffffff" if hover else accent, icon_size=icon_size)
+        self.settings_button_icon = icon
+
+        style = ttk.Style(self)
+        style.configure(
+            "SettingsIcon.TButton",
+            background=button_bg,
+            foreground=accent,
+            bordercolor=accent,
+            lightcolor=accent,
+            darkcolor=accent,
+            padding=(2, 2),
+        )
+        style.map(
+            "SettingsIcon.TButton",
+            background=[("active", accent), ("pressed", accent)],
+            foreground=[("active", "#ffffff"), ("pressed", "#ffffff")],
+        )
+
+        if icon is not None:
+            self.settings_button.configure(image=icon, text="", compound="center")
+        else:
+            self.settings_button.configure(image="", text="⚙")
+
+    def _on_settings_button_enter(self, _event=None):
+        self._update_settings_button_visual(hover=True)
+        if _event is not None:
+            self._show_settings_tooltip(_event.x_root, _event.y_root)
+
+    def _on_settings_button_leave(self, _event=None):
+        self._update_settings_button_visual(hover=False)
+        self._hide_settings_tooltip()
+
+    def _on_settings_button_motion(self, _event=None):
+        if _event is not None:
+            self._show_settings_tooltip(_event.x_root, _event.y_root)
+
+    def _show_settings_tooltip(self, root_x: int, root_y: int):
+        if self.settings_tooltip is None or not self.settings_tooltip.winfo_exists():
+            self.settings_tooltip = tk.Toplevel(self)
+            self.settings_tooltip.withdraw()
+            self.settings_tooltip.overrideredirect(True)
+            self.settings_tooltip.attributes("-topmost", True)
+            tk.Label(
+                self.settings_tooltip,
+                text="Settings",
+                bg="#111111",
+                fg="#f5f5f5",
+                padx=6,
+                pady=3,
+                font=("Segoe UI", 9),
+            ).pack()
+
+        self.settings_tooltip.geometry(f"+{root_x + 12}+{root_y + 18}")
+        self.settings_tooltip.deiconify()
+
+    def _hide_settings_tooltip(self):
+        if self.settings_tooltip is not None and self.settings_tooltip.winfo_exists():
+            self.settings_tooltip.withdraw()
+
+    def _hex_to_colorref(self, color_hex: str) -> int:
+        raw = str(color_hex or "").strip().lstrip("#")
+        if len(raw) != 6:
+            return 0
+        red = int(raw[0:2], 16)
+        green = int(raw[2:4], 16)
+        blue = int(raw[4:6], 16)
+        return (blue << 16) | (green << 8) | red
+
+    def _apply_windows_title_bar_theme(self, window: tk.Tk | tk.Toplevel, palette: dict[str, str], theme_name: str):
+        if os.name != "nt":
+            return
+
+        try:
+            window.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            if not hwnd:
+                return
+
+            use_dark_mode = ctypes.c_int(1 if theme_name == "dark" else 0)
+            caption_color = ctypes.c_int(self._hex_to_colorref(palette["bg"]))
+            text_color_hex = palette["accent"]
+            text_color = ctypes.c_int(self._hex_to_colorref(text_color_hex))
+
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            DWMWA_CAPTION_COLOR = 35
+            DWMWA_TEXT_COLOR = 36
+
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                ctypes.byref(use_dark_mode),
+                ctypes.sizeof(use_dark_mode),
+            )
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CAPTION_COLOR,
+                ctypes.byref(caption_color),
+                ctypes.sizeof(caption_color),
+            )
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TEXT_COLOR,
+                ctypes.byref(text_color),
+                ctypes.sizeof(text_color),
+            )
+        except Exception:
+            pass
+
+    def _light_palette(self) -> dict[str, str]:
+        return {
+            "bg": "#f2f2f2",
+            "surface": "#ffffff",
+            "fg": "#1a1a1a",
+            "muted_fg": "#444444",
+            "normal_input_fg": "#000000",
+            "placeholder_fg": "#777777",
+            "accent": "#1f6fff",
+            "text_bg": "#ffffff",
+            "text_fg": "#111111",
+            "button_fg": "#1a1a1a",
+            "button_bg": "#e8e8e8",
+            "check_hover_bg": "#e2e2e2",
+            "check_hover_fg": "#1a1a1a",
+        }
+
+    def _dark_palette(self) -> dict[str, str]:
+        return {
+            "bg": "#101010",
+            "surface": "#1a1a1a",
+            "fg": "#f5f5f5",
+            "muted_fg": "#dddddd",
+            "normal_input_fg": "#ffffff",
+            "placeholder_fg": "#9b9b9b",
+            "accent": "#ff9c1a",
+            "text_bg": "#111111",
+            "text_fg": "#f3f3f3",
+            "button_fg": "#ffffff",
+            "button_bg": "#2a2a2a",
+            "check_hover_bg": "#2f2f2f",
+            "check_hover_fg": "#ffffff",
+        }
+
+    def _coral_palette(self) -> dict[str, str]:
+        return {
+            "bg": "#142E4C",
+            "surface": "#142E4C",
+            "fg": "#FFFFFF",
+            "muted_fg": "#D5E2F0",
+            "normal_input_fg": "#FFFFFF",
+            "placeholder_fg": "#B8C7D8",
+            "accent": "#FF9B82",
+            "text_bg": "#142E4C",
+            "text_fg": "#FFFFFF",
+            "button_fg": "#FFFFFF",
+            "button_bg": "#142E4C",
+            "check_hover_bg": "#1B3A5E",
+            "check_hover_fg": "#FFFFFF",
+        }
+
+    def _apply_theme(self):
+        requested = str(self.settings_theme_var.get() or "system").lower()
+        if requested not in ("system", "light", "dark", "coral"):
+            requested = "system"
+
+        active_theme = self._detect_system_theme() if requested == "system" else requested
+        if active_theme == "dark":
+            palette = self._dark_palette()
+        elif active_theme == "coral":
+            palette = self._coral_palette()
+        else:
+            palette = self._light_palette()
+
+        self.theme_palette = palette
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", background=palette["bg"], foreground=palette["fg"])
+        style.configure("TFrame", background=palette["bg"])
+        style.configure("TLabel", background=palette["bg"], foreground=palette["fg"])
+        style.configure("TSeparator", background=palette["accent"])
+        style.configure(
+            "TButton",
+            background=palette["button_bg"],
+            foreground=palette["button_fg"],
+            bordercolor=palette["accent"],
+            lightcolor=palette["accent"],
+            darkcolor=palette["accent"],
+        )
+        style.map(
+            "TButton",
+            background=[("active", palette["accent"]), ("pressed", palette["accent"])],
+            foreground=[("active", "#ffffff"), ("pressed", "#ffffff")],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=palette["surface"],
+            foreground=palette["normal_input_fg"],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=palette["surface"],
+            background=palette["surface"],
+            foreground=palette["normal_input_fg"],
+            arrowcolor=palette["fg"],
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", palette["surface"])],
+            foreground=[("readonly", palette["normal_input_fg"])],
+            selectbackground=[("readonly", palette["accent"])],
+            selectforeground=[("readonly", "#ffffff")],
+        )
+        style.configure(
+            "Settings.TCheckbutton",
+            background=palette["bg"],
+            foreground=palette["fg"],
+        )
+        style.map(
+            "Settings.TCheckbutton",
+            background=[("active", palette.get("check_hover_bg", palette["bg"]))],
+            foreground=[("active", palette.get("check_hover_fg", palette["fg"]))],
+        )
+
+        self.configure(bg=palette["bg"])
+
+        if hasattr(self, "log_text") and self.log_text is not None:
+            self.log_text.configure(
+                background=palette["text_bg"],
+                foreground=palette["text_fg"],
+                insertbackground=palette["text_fg"],
+                selectbackground=palette["accent"],
+                selectforeground="#ffffff",
+            )
+
+        if hasattr(self, "sheet_url_entry") and self.sheet_url_entry is not None:
+            if self.sheet_url_has_placeholder:
+                self.sheet_url_entry.configure(foreground=palette["placeholder_fg"])
+            else:
+                self.sheet_url_entry.configure(foreground=palette["normal_input_fg"])
+
+        self._update_settings_button_visual(hover=False)
+
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.configure(bg=palette["bg"])
+
+        self._apply_windows_title_bar_theme(self, palette, active_theme)
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self._apply_windows_title_bar_theme(self.settings_window, palette, active_theme)
+
+    def _load_app_settings(self):
+        try:
+            with open(self.app_settings_path, "r", encoding="utf-8") as file:
+                parsed = json.load(file)
+        except Exception:
+            parsed = {}
+
+        merged = dict(DEFAULT_APP_SETTINGS)
+        if isinstance(parsed, dict):
+            merged.update(parsed)
+
+        configured_theme = str(merged.get("theme") or "system").lower()
+        if configured_theme not in ("light", "dark", "system", "coral"):
+            configured_theme = "system"
+
+        merged["theme"] = configured_theme
+        merged["auto_sync_on_startup"] = bool(merged.get("auto_sync_on_startup"))
+        merged["run_on_windows_startup"] = bool(merged.get("run_on_windows_startup"))
+        self.app_settings = merged
+        self.settings_auto_sync_var.set(self.app_settings["auto_sync_on_startup"])
+        self.settings_startup_app_var.set(self.app_settings["run_on_windows_startup"])
+        self._apply_windows_startup_preference(silent=True)
+        self.settings_theme_var.set(configured_theme)
+        self.settings_theme_label_var.set(self._theme_to_label(configured_theme))
+        self._save_app_settings()
+
+    def _save_app_settings(self):
+        with open(self.app_settings_path, "w", encoding="utf-8") as file:
+            json.dump(self.app_settings, file, indent=2)
+
+    def _on_toggle_auto_sync(self):
+        enabled = bool(self.settings_auto_sync_var.get())
+        self.app_settings["auto_sync_on_startup"] = enabled
+        self._save_app_settings()
+        self._log(f"Auto sync on startup {'enabled' if enabled else 'disabled'}.")
+
+    def _windows_startup_registry_path(self) -> str:
+        return r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+    def _windows_startup_value_name(self) -> str:
+        return "AssignmentTrackerGUI"
+
+    def _windows_startup_command(self) -> str:
+        if getattr(sys, "frozen", False):
+            return f'"{sys.executable}"'
+
+        interpreter = sys.executable
+        if interpreter.lower().endswith("python.exe"):
+            pythonw = os.path.join(os.path.dirname(interpreter), "pythonw.exe")
+            if os.path.isfile(pythonw):
+                interpreter = pythonw
+
+        script_path = os.path.abspath(__file__)
+        return f'"{interpreter}" "{script_path}"'
+
+    def _is_windows_startup_enabled(self) -> bool:
+        if os.name != "nt" or winreg is None:
+            return False
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._windows_startup_registry_path(), 0, winreg.KEY_READ) as key:
+                stored_command, _ = winreg.QueryValueEx(key, self._windows_startup_value_name())
+                return bool(str(stored_command or "").strip())
+        except OSError:
+            return False
+
+    def _set_windows_startup_enabled(self, enabled: bool) -> None:
+        if os.name != "nt" or winreg is None:
+            raise RuntimeError("Windows startup apps are only supported on Windows.")
+
+        value_name = self._windows_startup_value_name()
+        if enabled:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self._windows_startup_registry_path()) as key:
+                winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, self._windows_startup_command())
+        else:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self._windows_startup_registry_path()) as key:
+                try:
+                    winreg.DeleteValue(key, value_name)
+                except FileNotFoundError:
+                    pass
+
+    def _apply_windows_startup_preference(self, silent: bool = False) -> None:
+        enabled = bool(self.app_settings.get("run_on_windows_startup", False))
+        if os.name != "nt" or winreg is None:
+            return
+
+        try:
+            self._set_windows_startup_enabled(enabled)
+        except Exception as error:
+            if not silent:
+                self._log(f"Windows startup setting error: {error}")
+
+    def _on_toggle_windows_startup(self):
+        enabled = bool(self.settings_startup_app_var.get())
+        try:
+            self._set_windows_startup_enabled(enabled)
+            self.app_settings["run_on_windows_startup"] = enabled
+            self._save_app_settings()
+            self._log(f"Windows startup app {'enabled' if enabled else 'disabled'}.")
+        except Exception as error:
+            self.settings_startup_app_var.set(not enabled)
+            messagebox.showerror("Startup setting failed", str(error))
+
+    def _on_theme_selected(self):
+        selected_theme = str(self.settings_theme_var.get() or "system").lower()
+        if selected_theme not in ("system", "light", "dark", "coral"):
+            selected_theme = "system"
+        self.app_settings["theme"] = selected_theme
+        self.settings_theme_var.set(selected_theme)
+        self.settings_theme_label_var.set(self._theme_to_label(selected_theme))
+        self._save_app_settings()
+        self._apply_theme()
+        self._log(f"Theme changed to {selected_theme}.")
+
+    def _maybe_start_auto_sync(self):
+        if not self.app_settings.get("auto_sync_on_startup", False):
+            return
+        if self.sync_running:
+            return
+        self._log("Auto sync on startup is enabled. Running 'Sync all assignments'.")
+        self._start_sync(include_past=True, dry_run=False, replace_existing=False)
+
     def _render_top_sheet_controls(self, show_prompt: bool = False):
         if self.top_controls_frame is None:
             return
@@ -206,8 +802,8 @@ class AssignmentTrackerGUI(tk.Tk):
             ttk.Label(
                 self.top_controls_frame,
                 textvariable=self.top_controls_notice_var,
-                foreground="#555555",
-            ).grid(row=0, column=0, columnspan=3, sticky="e", pady=(0, 2))
+                foreground=self.theme_palette.get("muted_fg", "#555555"),
+            ).grid(row=0, column=0, columnspan=4, sticky="e", pady=(0, 2))
             controls_row = 1
         else:
             controls_row = 0
@@ -228,14 +824,29 @@ class AssignmentTrackerGUI(tk.Tk):
         self.sheet_url_entry.bind("<FocusOut>", self._on_sheet_url_focus_out)
         self._apply_sheet_url_placeholder()
 
-        ttk.Button(
+        self.add_sheet_button = ttk.Button(
             self.top_controls_frame,
             text="Add",
             command=self._handle_add_sheet_from_login if self.awaiting_initial_sheet_url else self._add_sheet_endpoint,
             width=10,
-        ).grid(row=controls_row, column=2, sticky="e")
+        )
+        self.add_sheet_button.grid(row=controls_row, column=2, sticky="e")
+
+        self.settings_button = ttk.Button(
+            self.top_controls_frame,
+            text="",
+            command=self._open_settings_window,
+            style="SettingsIcon.TButton",
+            width=2,
+        )
+        self.settings_button.grid(row=controls_row, column=3, sticky="e", padx=(8, 0))
+        self.settings_button.bind("<Enter>", self._on_settings_button_enter)
+        self.settings_button.bind("<Leave>", self._on_settings_button_leave)
+        self.settings_button.bind("<Motion>", self._on_settings_button_motion)
 
         self._refresh_sheet_dropdown()
+        self._update_settings_button_visual(hover=False)
+        self.after(0, lambda: self._update_settings_button_visual(hover=False))
 
     def _state_dir(self) -> str:
         if getattr(sys, "frozen", False):
@@ -248,6 +859,9 @@ class AssignmentTrackerGUI(tk.Tk):
             initial = {"selected_api_url": "", "sheets": []}
             with open(self.sheet_endpoints_path, "w", encoding="utf-8") as file:
                 json.dump(initial, file, indent=2)
+        if not os.path.isfile(self.app_settings_path):
+            with open(self.app_settings_path, "w", encoding="utf-8") as file:
+                json.dump(DEFAULT_APP_SETTINGS, file, indent=2)
 
     def _show_login_panel(self):
         for child in self.left_panel.winfo_children():
@@ -272,7 +886,11 @@ class AssignmentTrackerGUI(tk.Tk):
         ).pack(anchor="w")
 
         ttk.Separator(self.left_panel, orient="horizontal").pack(fill="x", pady=10)
-        ttk.Label(self.left_panel, textvariable=self.login_hint_var, foreground="#444").pack(anchor="w")
+        ttk.Label(
+            self.left_panel,
+            textvariable=self.login_hint_var,
+            foreground=self.theme_palette.get("muted_fg", "#444444"),
+        ).pack(anchor="w")
 
         self.reopen_login_button = ttk.Button(
             self.left_panel,
@@ -556,18 +1174,18 @@ class AssignmentTrackerGUI(tk.Tk):
             return
         self.sheet_url_has_placeholder = True
         self.sheet_url_input_var.set(SHEET_URL_PLACEHOLDER)
-        self.sheet_url_entry.configure(foreground="#777777")
+        self.sheet_url_entry.configure(foreground=self.theme_palette.get("placeholder_fg", "#777777"))
 
     def _on_sheet_url_focus_in(self, _event=None):
         if not self.sheet_url_has_placeholder:
             return
         self.sheet_url_has_placeholder = False
         self.sheet_url_input_var.set("")
-        self.sheet_url_entry.configure(foreground="#000000")
+        self.sheet_url_entry.configure(foreground=self.theme_palette.get("normal_input_fg", "#000000"))
 
     def _on_sheet_url_focus_out(self, _event=None):
         if self.sheet_url_input_var.get().strip():
-            self.sheet_url_entry.configure(foreground="#000000")
+            self.sheet_url_entry.configure(foreground=self.theme_palette.get("normal_input_fg", "#000000"))
             return
         self._apply_sheet_url_placeholder()
 
@@ -726,6 +1344,7 @@ class AssignmentTrackerGUI(tk.Tk):
                 self._set_login_hint("Saved Canvas session restored.")
                 self._log("Using saved Canvas session. No login needed.")
                 self.after(0, self._show_sync_panel)
+                self.after(250, self._maybe_start_auto_sync)
                 return
 
             if saved_state:
@@ -755,6 +1374,13 @@ class AssignmentTrackerGUI(tk.Tk):
         if importlib.util.find_spec("playwright") is None:
             self._log("Installing playwright package...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+
+        if importlib.util.find_spec("resvg_py") is None:
+            self._log("Installing resvg-py package for themed SVG icon rendering...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "resvg-py"])
+            except Exception:
+                self._log("Could not install resvg-py; settings button will use fallback gear text.")
 
         self._log("Ensuring Chromium is installed for Playwright...")
         subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
@@ -822,6 +1448,7 @@ class AssignmentTrackerGUI(tk.Tk):
                 self._log("Canvas sign-in detected.")
                 self._dispose_login_browser()
                 self.after(0, self._show_sync_panel)
+                self.after(250, self._maybe_start_auto_sync)
                 return
             self.page.wait_for_timeout(int(poll_interval_seconds * 1000))
 
@@ -1005,6 +1632,11 @@ class AssignmentTrackerGUI(tk.Tk):
         self.after(0, lambda: self.login_hint_var.set(value))
 
     def _close_app(self):
+        self._hide_settings_tooltip()
+        if self.settings_tooltip is not None and self.settings_tooltip.winfo_exists():
+            self.settings_tooltip.destroy()
+            self.settings_tooltip = None
+
         self._dispose_login_browser()
 
         self.destroy()
