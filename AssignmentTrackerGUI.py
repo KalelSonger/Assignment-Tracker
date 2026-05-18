@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import webbrowser
 import ctypes
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -132,7 +133,10 @@ class AssignmentTrackerGUI(tk.Tk):
         self.settings_button = None
         self.settings_button_icon = None
         self.settings_tooltip = None
+        self.generate_sheet_tooltip = None
+        self.remove_sheet_tooltip = None
         self.add_sheet_button = None
+        self.remove_sheet_button = None
         self.settings_window = None
         self.settings_theme_combo = None
         self.settings_theme_label_var = tk.StringVar(value="Light theme")
@@ -470,6 +474,17 @@ class AssignmentTrackerGUI(tk.Tk):
         if _event is not None:
             self._show_settings_tooltip(_event.x_root, _event.y_root)
 
+    def _on_generate_button_enter(self, _event=None):
+        if _event is not None:
+            self._show_generate_sheet_tooltip(_event.x_root, _event.y_root)
+
+    def _on_generate_button_leave(self, _event=None):
+        self._hide_generate_sheet_tooltip()
+
+    def _on_generate_button_motion(self, _event=None):
+        if _event is not None:
+            self._show_generate_sheet_tooltip(_event.x_root, _event.y_root)
+
     def _on_settings_button_leave(self, _event=None):
         self._update_settings_button_visual(hover=False)
         self._hide_settings_tooltip()
@@ -500,6 +515,63 @@ class AssignmentTrackerGUI(tk.Tk):
     def _hide_settings_tooltip(self):
         if self.settings_tooltip is not None and self.settings_tooltip.winfo_exists():
             self.settings_tooltip.withdraw()
+
+    def _show_generate_sheet_tooltip(self, root_x: int, root_y: int):
+        if self.generate_sheet_tooltip is None or not self.generate_sheet_tooltip.winfo_exists():
+            self.generate_sheet_tooltip = tk.Toplevel(self)
+            self.generate_sheet_tooltip.withdraw()
+            self.generate_sheet_tooltip.overrideredirect(True)
+            self.generate_sheet_tooltip.attributes("-topmost", True)
+            tk.Label(
+                self.generate_sheet_tooltip,
+                text="generate blank spreadsheet from template.",
+                bg="#111111",
+                fg="#f5f5f5",
+                padx=6,
+                pady=3,
+                font=("Segoe UI", 9),
+            ).pack()
+
+        self.generate_sheet_tooltip.geometry(f"+{root_x + 12}+{root_y + 18}")
+        self.generate_sheet_tooltip.deiconify()
+
+    def _hide_generate_sheet_tooltip(self):
+        if self.generate_sheet_tooltip is not None and self.generate_sheet_tooltip.winfo_exists():
+            self.generate_sheet_tooltip.withdraw()
+
+    def _on_remove_sheet_button_enter(self, _event=None):
+        if _event is not None:
+            self._show_remove_sheet_tooltip(_event.x_root, _event.y_root)
+
+    def _on_remove_sheet_button_leave(self, _event=None):
+        self._hide_remove_sheet_tooltip()
+
+    def _on_remove_sheet_button_motion(self, _event=None):
+        if _event is not None:
+            self._show_remove_sheet_tooltip(_event.x_root, _event.y_root)
+
+    def _show_remove_sheet_tooltip(self, root_x: int, root_y: int):
+        if self.remove_sheet_tooltip is None or not self.remove_sheet_tooltip.winfo_exists():
+            self.remove_sheet_tooltip = tk.Toplevel(self)
+            self.remove_sheet_tooltip.withdraw()
+            self.remove_sheet_tooltip.overrideredirect(True)
+            self.remove_sheet_tooltip.attributes("-topmost", True)
+            tk.Label(
+                self.remove_sheet_tooltip,
+                text="Remove spreadsheet",
+                bg="#111111",
+                fg="#f5f5f5",
+                padx=6,
+                pady=3,
+                font=("Segoe UI", 9),
+            ).pack()
+
+        self.remove_sheet_tooltip.geometry(f"+{root_x + 12}+{root_y + 18}")
+        self.remove_sheet_tooltip.deiconify()
+
+    def _hide_remove_sheet_tooltip(self):
+        if self.remove_sheet_tooltip is not None and self.remove_sheet_tooltip.winfo_exists():
+            self.remove_sheet_tooltip.withdraw()
 
     def _hex_to_colorref(self, color_hex: str) -> int:
         raw = str(color_hex or "").strip().lstrip("#")
@@ -818,6 +890,9 @@ class AssignmentTrackerGUI(tk.Tk):
             return
         if self.sync_running:
             return
+        if not self._selected_sheet_api_url().strip():
+            self._log("Auto sync skipped: no sheet URL selected.")
+            return
         self._log("Auto sync on startup is enabled. Running 'Sync all assignments'.")
         self._start_sync(include_past=True, dry_run=False, replace_existing=False)
 
@@ -838,10 +913,22 @@ class AssignmentTrackerGUI(tk.Tk):
                 self.top_controls_frame,
                 textvariable=self.top_controls_notice_var,
                 foreground=self.theme_palette.get("muted_fg", "#555555"),
-            ).grid(row=0, column=0, columnspan=4, sticky="e", pady=(0, 2))
+            ).grid(row=0, column=0, columnspan=6, sticky="e", pady=(0, 2))
             controls_row = 1
         else:
             controls_row = 0
+
+        # "Generate formatted blank spreadsheet" button
+        self.generate_sheet_button = ttk.Button(
+            self.top_controls_frame,
+            text="Generate",
+            command=self._generate_formatted_sheet,
+            width=12,
+        )
+        self.generate_sheet_button.grid(row=controls_row, column=0, padx=(0, 8), sticky="e")
+        self.generate_sheet_button.bind("<Enter>", self._on_generate_button_enter)
+        self.generate_sheet_button.bind("<Leave>", self._on_generate_button_leave)
+        self.generate_sheet_button.bind("<Motion>", self._on_generate_button_motion)
 
         dropdown_state = "readonly" if self.sheet_registry.get("sheets") else "disabled"
         self.sheet_dropdown = ttk.Combobox(
@@ -850,11 +937,22 @@ class AssignmentTrackerGUI(tk.Tk):
             state=dropdown_state,
             width=30,
         )
-        self.sheet_dropdown.grid(row=controls_row, column=0, padx=(0, 8), sticky="e")
+        self.sheet_dropdown.grid(row=controls_row, column=1, padx=(0, 8), sticky="e")
         self.sheet_dropdown.bind("<<ComboboxSelected>>", self._on_sheet_selected)
 
+        self.remove_sheet_button = ttk.Button(
+            self.top_controls_frame,
+            text="x",
+            command=self._remove_selected_sheet,
+            width=3,
+        )
+        self.remove_sheet_button.grid(row=controls_row, column=2, padx=(0, 8), sticky="e")
+        self.remove_sheet_button.bind("<Enter>", self._on_remove_sheet_button_enter)
+        self.remove_sheet_button.bind("<Leave>", self._on_remove_sheet_button_leave)
+        self.remove_sheet_button.bind("<Motion>", self._on_remove_sheet_button_motion)
+
         self.sheet_url_entry = ttk.Entry(self.top_controls_frame, textvariable=self.sheet_url_input_var, width=38)
-        self.sheet_url_entry.grid(row=controls_row, column=1, padx=(0, 8), sticky="e")
+        self.sheet_url_entry.grid(row=controls_row, column=3, padx=(0, 8), sticky="e")
         self.sheet_url_entry.bind("<FocusIn>", self._on_sheet_url_focus_in)
         self.sheet_url_entry.bind("<FocusOut>", self._on_sheet_url_focus_out)
         self._apply_sheet_url_placeholder()
@@ -865,7 +963,7 @@ class AssignmentTrackerGUI(tk.Tk):
             command=self._handle_add_sheet_from_login if self.awaiting_initial_sheet_url else self._add_sheet_endpoint,
             width=10,
         )
-        self.add_sheet_button.grid(row=controls_row, column=2, sticky="e")
+        self.add_sheet_button.grid(row=controls_row, column=4, sticky="e")
 
         self.settings_button = ttk.Button(
             self.top_controls_frame,
@@ -874,7 +972,7 @@ class AssignmentTrackerGUI(tk.Tk):
             style="SettingsIcon.TButton",
             width=2,
         )
-        self.settings_button.grid(row=controls_row, column=3, sticky="e", padx=(8, 0))
+        self.settings_button.grid(row=controls_row, column=5, sticky="e", padx=(8, 0))
         self.settings_button.bind("<Enter>", self._on_settings_button_enter)
         self.settings_button.bind("<Leave>", self._on_settings_button_leave)
         self.settings_button.bind("<Motion>", self._on_settings_button_motion)
@@ -931,7 +1029,7 @@ class AssignmentTrackerGUI(tk.Tk):
             self.left_panel,
             text="Reopen browser",
             command=self._retry_login_browser,
-            state="disabled",
+            state="normal" if self.backend is not None else "disabled",
         )
         self.reopen_login_button.pack(anchor="w", pady=(8, 0))
 
@@ -952,61 +1050,106 @@ class AssignmentTrackerGUI(tk.Tk):
         ]
         button_width = self._button_width_for_labels(base_labels + class_sync_labels + class_clear_labels)
 
-        ttk.Separator(self.left_panel, orient="horizontal").pack(fill="x", pady=10)
+        scroll_container = ttk.Frame(self.left_panel)
+        scroll_container.pack(fill="both", expand=True)
 
-        ttk.Label(self.left_panel, text="Sync Actions", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        scroll_canvas = tk.Canvas(
+            scroll_container,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            background=self.theme_palette.get("bg", "#f2f2f2"),
+        )
+        scroll_bar = ttk.Scrollbar(scroll_container, orient="vertical", command=scroll_canvas.yview)
+        scroll_canvas.configure(yscrollcommand=scroll_bar.set)
+
+        scroll_canvas.pack(side="left", fill="both", expand=True)
+        scroll_bar.pack(side="right", fill="y")
+
+        scroll_body = ttk.Frame(scroll_canvas)
+        body_window = scroll_canvas.create_window((0, 0), window=scroll_body, anchor="nw")
+
+        def _on_body_configure(_event=None):
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            scroll_canvas.itemconfigure(body_window, width=event.width)
+
+        def _on_mousewheel(event):
+            delta = int(getattr(event, "delta", 0))
+            if delta == 0:
+                return "break"
+            scroll_canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+            return "break"
+
+        def _bind_mousewheel(_event=None):
+            scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(_event=None):
+            scroll_canvas.unbind_all("<MouseWheel>")
+
+        scroll_body.bind("<Configure>", _on_body_configure)
+        scroll_canvas.bind("<Configure>", _on_canvas_configure)
+        scroll_canvas.bind("<Enter>", _bind_mousewheel)
+        scroll_canvas.bind("<Leave>", _unbind_mousewheel)
+        scroll_body.bind("<Enter>", _bind_mousewheel)
+        scroll_body.bind("<Leave>", _unbind_mousewheel)
+
+        ttk.Separator(scroll_body, orient="horizontal").pack(fill="x", pady=10)
+
+        ttk.Label(scroll_body, text="Sync Actions", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
 
         ttk.Button(
-            self.left_panel,
+            scroll_body,
             text="Sync all assignments",
             command=lambda: self._start_sync(include_past=True, dry_run=False, replace_existing=False),
             width=button_width,
         ).pack(anchor="w", pady=4)
 
         ttk.Button(
-            self.left_panel,
+            scroll_body,
             text="Sync future assignments",
             command=lambda: self._start_sync(include_past=False, dry_run=False, replace_existing=False),
             width=button_width,
         ).pack(anchor="w", pady=4)
 
         ttk.Button(
-            self.left_panel,
+            scroll_body,
             text="Dry-sync (no writes)",
             command=lambda: self._start_sync(include_past=True, dry_run=True, replace_existing=False),
             width=button_width,
         ).pack(anchor="w", pady=4)
 
-        ttk.Label(self.left_panel, text="Sync individual class tab:").pack(anchor="w", pady=(8, 2))
+        ttk.Label(scroll_body, text="Sync individual class tab:").pack(anchor="w", pady=(8, 2))
         for class_tab in self.allowed_tabs:
             ttk.Button(
-                self.left_panel,
+                scroll_body,
                 text=f"Sync: {class_tab}",
                 command=lambda tab_name=class_tab: self._start_sync_single_tab(tab_name),
                 width=button_width,
             ).pack(anchor="w", pady=2)
 
-        ttk.Separator(self.left_panel, orient="horizontal").pack(fill="x", pady=10)
-        ttk.Label(self.left_panel, text="Clear Actions", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+        ttk.Separator(scroll_body, orient="horizontal").pack(fill="x", pady=10)
+        ttk.Label(scroll_body, text="Clear Actions", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
 
         ttk.Button(
-            self.left_panel,
+            scroll_body,
             text="Clear all class tabs",
             command=self._start_clear_all_tabs,
             width=button_width,
         ).pack(anchor="w", pady=4)
 
-        ttk.Label(self.left_panel, text="Clear individual class tab:").pack(anchor="w", pady=(8, 2))
+        ttk.Label(scroll_body, text="Clear individual class tab:").pack(anchor="w", pady=(8, 2))
         for class_tab in self.allowed_tabs:
             ttk.Button(
-                self.left_panel,
+                scroll_body,
                 text=f"Clear: {class_tab}",
                 command=lambda tab_name=class_tab: self._start_clear_single_tab(tab_name),
                 width=button_width,
             ).pack(anchor="w", pady=2)
 
-        ttk.Separator(self.left_panel, orient="horizontal").pack(fill="x", pady=10)
-        ttk.Button(self.left_panel, text="Close", command=self._close_app, width=button_width).pack(anchor="w", pady=4)
+        ttk.Separator(scroll_body, orient="horizontal").pack(fill="x", pady=10)
+        ttk.Button(scroll_body, text="Close", command=self._close_app, width=button_width).pack(anchor="w", pady=4)
 
     def _button_width_for_labels(self, labels: list[str], min_width: int = 30, padding: int = 2) -> int:
         if not labels:
@@ -1104,6 +1247,10 @@ class AssignmentTrackerGUI(tk.Tk):
             longest_name = max((len(name) for name in names), default=24)
             dynamic_width = max(24, min(72, longest_name + 2))
             self.sheet_dropdown.configure(width=dynamic_width)
+            self.sheet_dropdown.configure(state="readonly" if names else "disabled")
+
+        if self.remove_sheet_button is not None:
+            self.remove_sheet_button.configure(state="normal" if names else "disabled")
 
         selected_url = str(self.sheet_registry.get("selected_api_url") or "").strip()
         selected_name = ""
@@ -1152,6 +1299,12 @@ class AssignmentTrackerGUI(tk.Tk):
         raw_url = self.sheet_url_input_var.get().strip()
         if self.sheet_url_has_placeholder and raw_url == SHEET_URL_PLACEHOLDER:
             raw_url = ""
+        self._register_sheet_endpoint(raw_url, reload_tabs=reload_tabs)
+        self.sheet_url_input_var.set("")
+        self.sheet_url_has_placeholder = False
+        self._apply_sheet_url_placeholder()
+
+    def _register_sheet_endpoint(self, raw_url: str, reload_tabs: bool = True, preferred_name: str | None = None):
         if not raw_url:
             messagebox.showwarning("Missing URL", "Paste a Google Sheet URL first.")
             return
@@ -1177,7 +1330,9 @@ class AssignmentTrackerGUI(tk.Tk):
             None,
         )
         if existing is None:
-            name = self._safe_infer_sheet_name(raw_url)
+            if not self._ensure_google_sheet_access_or_prompt_reauth(raw_url):
+                return
+            name = str(preferred_name or "").strip() or self._safe_infer_sheet_name(raw_url)
             self.sheet_registry.setdefault("sheets", []).append({"api_url": raw_url, "display_name": name})
             self._log(f"Added sheet endpoint: {name}")
         else:
@@ -1186,12 +1341,94 @@ class AssignmentTrackerGUI(tk.Tk):
 
         self.sheet_registry["selected_api_url"] = raw_url
         self._save_sheet_registry()
-        self.sheet_url_input_var.set("")
-        self.sheet_url_has_placeholder = False
         self._refresh_sheet_dropdown()
         if reload_tabs:
             self._reload_selected_sheet_tabs()
-        self._apply_sheet_url_placeholder()
+
+    def _ensure_google_sheet_access_or_prompt_reauth(self, api_url: str) -> bool:
+        if self.backend is None or not hasattr(self.backend, "validate_google_sheet_access"):
+            return True
+
+        try:
+            self.backend.validate_google_sheet_access(api_url)
+            return True
+        except Exception as error:
+            raw_message = str(error)
+            message = raw_message.casefold()
+            reauth_keywords = (
+                "permission",
+                "forbidden",
+                "insufficient",
+                "requested entity was not found",
+                "not found",
+                "caller does not have permission",
+            )
+            should_prompt_reauth = any(keyword in message for keyword in reauth_keywords)
+
+            if should_prompt_reauth and hasattr(self.backend, "reset_google_login"):
+                wants_reauth = messagebox.askyesno(
+                    "Google access required",
+                    "That sheet may belong to a different Google account or is not shared with this account.\n\n"
+                    "Sign in to Google again now and retry adding this sheet?",
+                )
+                if wants_reauth:
+                    try:
+                        self.backend.reset_google_login()
+                        self.backend.validate_google_sheet_access(api_url)
+                        self._log("Google sign-in refreshed for sheet access.")
+                        return True
+                    except Exception as retry_error:
+                        messagebox.showerror(
+                            "Google sign-in required",
+                            f"Could not access that sheet after re-sign in:\n\n{retry_error}",
+                        )
+                        return False
+
+            messagebox.showerror(
+                "Sheet access failed",
+                f"Could not access that Google Sheet with the current Google sign-in:\n\n{raw_message}",
+            )
+            return False
+
+    def _remove_selected_sheet(self):
+        selected_url = self._selected_sheet_api_url()
+        if not selected_url:
+            return
+
+        selected_name = self.selected_sheet_name_var.get().strip() or "selected sheet"
+        if not messagebox.askyesno(
+            "Remove saved sheet",
+            f"Remove '{selected_name}' from the saved sheet list?",
+        ):
+            return
+
+        normalized_selected = self._normalize_api_url(selected_url)
+        remaining = [
+            item
+            for item in self.sheet_registry.get("sheets", [])
+            if self._normalize_api_url(item.get("api_url", "")) != normalized_selected
+        ]
+
+        self.sheet_registry["sheets"] = remaining
+        self.sheet_registry["selected_api_url"] = remaining[0]["api_url"] if remaining else ""
+        self._save_sheet_registry()
+        self._refresh_sheet_dropdown()
+
+        if remaining:
+            self._log(f"Removed sheet endpoint: {selected_name}")
+            self._reload_selected_sheet_tabs()
+        else:
+            self.allowed_tabs = []
+            self.sheet_patterns = []
+            self.awaiting_initial_sheet_url = True
+            if self.storage_state is not None:
+                self._set_status("Signed in. Sheet URL required.")
+                self._set_login_hint("Add a sheet URL at the top to continue.")
+            else:
+                self._set_status("Sheet URL required")
+                self._set_login_hint("Add a sheet URL at the top to continue.")
+            self._log("No sheet endpoints remain. Add a sheet URL to continue.")
+            self.after(0, self._show_sync_panel)
 
     def _handle_add_sheet_from_login(self):
         self._add_sheet_endpoint(reload_tabs=False)
@@ -1204,6 +1441,75 @@ class AssignmentTrackerGUI(tk.Tk):
             self._set_status("Sheet saved. Continuing startup...")
             self._set_login_hint("Initializing with selected sheet...")
             threading.Thread(target=self._bootstrap_and_start_login, daemon=True).start()
+
+    def _generate_formatted_sheet(self):
+        """Generate a formatted sheet from template with Canvas courses."""
+        if self.backend is None or self.storage_state is None:
+            messagebox.showwarning(
+                "Not Ready",
+                "Please complete Canvas sign-in first.",
+            )
+            return
+
+        def run_generation():
+            try:
+                self._set_status("Generating formatted sheet...")
+                self._log("Starting sheet generation...")
+                self._log("This may take 30-60 seconds. Please wait...")
+
+                from playwright.sync_api import sync_playwright
+
+                with sync_playwright() as p:
+                    api_context = p.request.new_context(storage_state=self.storage_state)
+                    try:
+                        if not self.backend._is_canvas_authenticated(api_context):
+                            self._clear_canvas_session()
+                            raise RuntimeError(
+                                "Canvas session expired. Please sign in again before generating a sheet."
+                            )
+
+                        class RequestContextShim:
+                            def __init__(self, request):
+                                self.request = request
+
+                        shim = RequestContextShim(api_context)
+                        new_sheet_url = self.backend.generate_formatted_sheet_from_template(shim)
+                    finally:
+                        api_context.dispose()
+
+                generated_name = self.backend.infer_sheet_display_name(new_sheet_url)
+                self.after(
+                    0,
+                    lambda: self._register_sheet_endpoint(
+                        new_sheet_url,
+                        reload_tabs=True,
+                        preferred_name=generated_name,
+                    ),
+                )
+
+                opened = webbrowser.open_new_tab(new_sheet_url)
+                self._log(f"Sheet generated successfully!")
+                self._log(f"URL: {new_sheet_url}")
+                if opened:
+                    self._log("Opened generated sheet in your default browser.")
+                else:
+                    self._log("Could not auto-open browser tab. Open the URL above manually.")
+                
+                self._set_status("Sheet generated. Ready to sync.")
+                
+            except Exception as error:
+                error_msg = str(error)
+                self._log(f"Sheet generation failed: {error_msg}")
+                self._set_status("Sheet generation failed.")
+                self.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Generation Failed",
+                        f"Could not generate sheet:\n\n{error_msg}"
+                    )
+                )
+
+        threading.Thread(target=run_generation, daemon=True).start()
 
     def _apply_sheet_url_placeholder(self):
         if self.sheet_url_entry is None:
@@ -1374,46 +1680,43 @@ class AssignmentTrackerGUI(tk.Tk):
             self._load_sheet_registry()
 
             selected_api_url = self._selected_sheet_api_url()
-            if not selected_api_url.strip():
-                self.awaiting_initial_sheet_url = True
-                self._set_status("Sheet URL required")
-                self._set_login_hint("Add a sheet URL at the top to continue.")
-                self._log("No saved sheet endpoints found. Add a sheet URL in the top field.")
-                self.after(0, self._show_login_panel)
-                return
+            self.awaiting_initial_sheet_url = not selected_api_url.strip()
 
-            self.awaiting_initial_sheet_url = False
-
-            try:
-                self.backend.set_sheet_api_url(selected_api_url)
-            except Exception:
-                self.sheet_registry["selected_api_url"] = ""
-                self._save_sheet_registry()
-                self.awaiting_initial_sheet_url = True
+            if self.awaiting_initial_sheet_url:
                 self.allowed_tabs = []
                 self.sheet_patterns = []
-                self._set_status("Sheet URL required")
-                self._set_login_hint("Add a Google Sheet URL at the top to continue.")
-                self._log("Saved sheet URL is invalid for direct-sheet mode. Add a Google Sheet URL.")
-                self.after(0, self._show_sync_panel)
-                return
-
-            self._log(f"Config source: {CONFIG_SOURCE}")
-            self._log(f"Active sheet API URL: {self.backend.get_sheet_api_url()}")
-
-            self._log("Loading selected sheet class tabs...")
-            allowed_tabs = self.backend.fetch_allowed_sheet_classes()
-            self.allowed_tabs = allowed_tabs
-            self.sheet_patterns = self.backend._build_sheet_class_patterns(allowed_tabs)
-            self._log(f"Loaded {len(allowed_tabs)} class tabs from selected sheet.")
+                self._log("No saved sheet endpoints found. Canvas sign-in will still open.")
+            else:
+                try:
+                    self.backend.set_sheet_api_url(selected_api_url)
+                except Exception:
+                    self.sheet_registry["selected_api_url"] = ""
+                    self._save_sheet_registry()
+                    self.awaiting_initial_sheet_url = True
+                    self.allowed_tabs = []
+                    self.sheet_patterns = []
+                    self._log("Saved sheet URL is invalid. Canvas sign-in will still open; add a new sheet URL after login.")
+                else:
+                    self._log(f"Config source: {CONFIG_SOURCE}")
+                    self._log(f"Active sheet API URL: {self.backend.get_sheet_api_url()}")
+                    self._log("Loading selected sheet class tabs...")
+                    allowed_tabs = self.backend.fetch_allowed_sheet_classes()
+                    self.allowed_tabs = allowed_tabs
+                    self.sheet_patterns = self.backend._build_sheet_class_patterns(allowed_tabs)
+                    self._log(f"Loaded {len(allowed_tabs)} class tabs from selected sheet.")
 
             self._set_status("Checking saved Canvas session...")
             saved_state = self._load_canvas_session_from_disk()
             if saved_state and self._is_storage_state_authenticated(saved_state):
                 self.storage_state = saved_state
-                self._set_status("Signed in. Ready to sync.")
-                self._set_login_hint("Saved Canvas session restored.")
-                self._log("Using saved Canvas session. No login needed.")
+                if self.awaiting_initial_sheet_url:
+                    self._set_status("Signed in. Sheet URL required.")
+                    self._set_login_hint("Saved Canvas session restored. Add a sheet URL at the top to continue.")
+                    self._log("Using saved Canvas session. Add a sheet URL to continue.")
+                else:
+                    self._set_status("Signed in. Ready to sync.")
+                    self._set_login_hint("Saved Canvas session restored.")
+                    self._log("Using saved Canvas session. No login needed.")
                 self.after(0, self._show_sync_panel)
                 self.after(250, self._maybe_start_auto_sync)
                 return
@@ -1730,10 +2033,18 @@ class AssignmentTrackerGUI(tk.Tk):
         self.after(0, lambda: self.login_hint_var.set(value))
 
     def _close_app(self):
+        self._hide_generate_sheet_tooltip()
         self._hide_settings_tooltip()
+        self._hide_remove_sheet_tooltip()
+        if self.generate_sheet_tooltip is not None and self.generate_sheet_tooltip.winfo_exists():
+            self.generate_sheet_tooltip.destroy()
+            self.generate_sheet_tooltip = None
         if self.settings_tooltip is not None and self.settings_tooltip.winfo_exists():
             self.settings_tooltip.destroy()
             self.settings_tooltip = None
+        if self.remove_sheet_tooltip is not None and self.remove_sheet_tooltip.winfo_exists():
+            self.remove_sheet_tooltip.destroy()
+            self.remove_sheet_tooltip = None
 
         self._dispose_login_browser()
 

@@ -82,6 +82,7 @@ $args = @(
     "--hidden-import", "google.oauth2.credentials",
     "--hidden-import", "google_auth_oauthlib.flow",
     "--hidden-import", "googleapiclient.discovery",
+    "--hidden-import", "googleapiclient.errors",
     "--add-data", "app.ico;.",
     "--add-data", "settings.svg;."
 )

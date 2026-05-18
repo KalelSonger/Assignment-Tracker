@@ -17,7 +17,16 @@ SHEET_CLASSES_DEBUG_FILE = os.path.join(OUTPUT_DIR, "sheet_classes_debug.txt")
 SHEET_SYNC_RESPONSE_FILE = os.path.join(OUTPUT_DIR, "sheet_sync_response.json")
 CANVAS_ASSIGNMENTS_DEBUG_FILE = os.path.join(OUTPUT_DIR, "canvas_assignments_debug.json")
 EXCLUDED_TAB_NAMES = {"dashboard", "class[template]"}
-GOOGLE_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+GOOGLE_SHEETS_SCOPES = [
+	"https://www.googleapis.com/auth/spreadsheets",
+	"https://www.googleapis.com/auth/drive.file",
+]
+GOOGLE_USERINFO_SCOPES = [
+	"openid",
+	"https://www.googleapis.com/auth/userinfo.email",
+	"https://www.googleapis.com/auth/userinfo.profile",
+]
+TEMPLATE_SHEET_ID = "17W5u-FZ-bq8ciiSIgSRu7B255P1kheF_G30hGUedHuU"
 GOOGLE_TOKEN_FILE = "google_sheets_token.local.json"
 GOOGLE_CLIENT_SECRET_CANDIDATES = (
 	"google_oauth_client_secret.json",
@@ -86,6 +95,27 @@ def parse_spreadsheet_id(sheet_url: str) -> str:
 	return ""
 
 
+def reset_google_login() -> None:
+	"""Clear cached Google OAuth token so next Google API call re-prompts sign-in."""
+	token_path = _token_path()
+	if os.path.isfile(token_path):
+		os.remove(token_path)
+
+
+def validate_google_sheet_access(sheet_url: str) -> bool:
+	"""Validate that the current Google account can access the provided sheet URL."""
+	spreadsheet_id = parse_spreadsheet_id(sheet_url)
+	if not spreadsheet_id:
+		raise RuntimeError("Invalid Google Sheet URL.")
+
+	service = _google_sheets_service()
+	service.spreadsheets().get(
+		spreadsheetId=spreadsheet_id,
+		fields="spreadsheetId,properties.title",
+	).execute()
+	return True
+
+
 def set_sheet_api_url(api_url: str) -> None:
 	global CURRENT_SHEET_URL, CURRENT_SPREADSHEET_ID
 	cleaned = str(api_url or "").strip()
@@ -121,7 +151,7 @@ def _require_google_dependencies() -> None:
 		) from error
 
 
-def _google_sheets_service():
+def _load_google_credentials(scopes: list[str] | None = None):
 	_require_google_dependencies()
 
 	import importlib
@@ -129,17 +159,21 @@ def _google_sheets_service():
 	request_module = importlib.import_module("google.auth.transport.requests")
 	credentials_module = importlib.import_module("google.oauth2.credentials")
 	flow_module = importlib.import_module("google_auth_oauthlib.flow")
-	discovery_module = importlib.import_module("googleapiclient.discovery")
 
 	Request = getattr(request_module, "Request")
 	Credentials = getattr(credentials_module, "Credentials")
 	InstalledAppFlow = getattr(flow_module, "InstalledAppFlow")
-	build = getattr(discovery_module, "build")
 
+	required_scopes = list(scopes or GOOGLE_SHEETS_SCOPES)
 	creds = None
 	token_path = _token_path()
 	if os.path.isfile(token_path):
-		creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SHEETS_SCOPES)
+		creds = Credentials.from_authorized_user_file(token_path, required_scopes)
+
+	if creds and hasattr(creds, "scopes"):
+		granted = set(creds.scopes or [])
+		if not set(required_scopes).issubset(granted):
+			creds = None
 
 	if not creds or not creds.valid:
 		if creds and creds.expired and creds.refresh_token:
@@ -151,11 +185,23 @@ def _google_sheets_service():
 					"Google OAuth client secret file not found. Add one of: "
 					+ ", ".join(GOOGLE_CLIENT_SECRET_CANDIDATES)
 				)
-			flow = InstalledAppFlow.from_client_secrets_file(client_secret_path, GOOGLE_SHEETS_SCOPES)
+			flow = InstalledAppFlow.from_client_secrets_file(client_secret_path, required_scopes)
 			creds = flow.run_local_server(port=0)
 
 	with open(token_path, "w", encoding="utf-8") as token_file:
 		token_file.write(creds.to_json())
+
+	return creds
+
+
+def _google_sheets_service():
+	_require_google_dependencies()
+
+	import importlib
+	discovery_module = importlib.import_module("googleapiclient.discovery")
+	build = getattr(discovery_module, "build")
+
+	creds = _load_google_credentials(GOOGLE_SHEETS_SCOPES)
 
 	return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
@@ -167,6 +213,462 @@ def _require_spreadsheet_id() -> str:
 	if not spreadsheet_id:
 		raise RuntimeError("No Google Sheet is selected. Add a valid sheet URL first.")
 	return spreadsheet_id
+
+
+def _google_drive_service():
+	"""Get Google Drive API service using same credentials as Sheets API."""
+	_require_google_dependencies()
+	import importlib
+	discovery_module = importlib.import_module("googleapiclient.discovery")
+	build = getattr(discovery_module, "build")
+
+	creds = _load_google_credentials(GOOGLE_SHEETS_SCOPES)
+
+	return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def _get_google_user_email() -> str:
+	"""Get the email of the currently authenticated Google user."""
+	try:
+		import importlib
+		discovery_module = importlib.import_module("googleapiclient.discovery")
+		build = getattr(discovery_module, "build")
+
+		user_scopes = GOOGLE_SHEETS_SCOPES + GOOGLE_USERINFO_SCOPES
+		creds = _load_google_credentials(user_scopes)
+		oauth_service = build("oauth2", "v2", credentials=creds, cache_discovery=False)
+		profile = oauth_service.userinfo().get().execute()
+		email = str(profile.get("email") or "").strip()
+		if email:
+			return email
+	except Exception as e:
+		print(f"Warning: Could not fetch user email: {e}")
+
+	try:
+		drive_service = _google_drive_service()
+		about = drive_service.about().get(fields="user").execute()
+		email = str(about.get("user", {}).get("emailAddress") or "").strip()
+		if email:
+			return email
+	except Exception:
+		pass
+
+	return "user"
+
+
+def _get_canvas_user_display_name(canvas_context) -> str:
+	"""Get the Canvas user's preferred display name for naming generated sheets."""
+	try:
+		response = canvas_context.request.get(f"{CANVAS_BASE_URL}/api/v1/users/self")
+		if not response.ok:
+			return ""
+		payload = response.json()
+		if not isinstance(payload, dict):
+			return ""
+
+		for key in ("short_name", "name", "sortable_name", "login_id"):
+			value = str(payload.get(key) or "").strip()
+			if value:
+				# Keep names readable while removing control characters/newlines.
+				value = re.sub(r"[\r\n\t]+", " ", value)
+				value = re.sub(r"\s+", " ", value).strip()
+				return value
+	except Exception:
+		pass
+
+	return ""
+
+
+def _copy_drive_file(file_id: str, new_title: str) -> str:
+	"""Copy a file in Google Drive and return the new file ID."""
+	drive_service = _google_drive_service()
+	body = {"name": new_title}
+	try:
+		copied_file = drive_service.files().copy(fileId=file_id, body=body).execute()
+		return copied_file.get("id")
+	except Exception as e:
+		raise RuntimeError(f"Failed to copy template sheet: {e}")
+
+
+def _copy_template_via_sheets_api(template_spreadsheet_id: str, new_title: str) -> str:
+	"""Clone the template spreadsheet using Sheets API only (no Drive API required)."""
+	service = _google_sheets_service()
+
+	created = service.spreadsheets().create(
+		body={"properties": {"title": new_title}}
+	).execute()
+	new_spreadsheet_id = str(created.get("spreadsheetId") or "").strip()
+	if not new_spreadsheet_id:
+		raise RuntimeError("Could not create destination spreadsheet.")
+
+	default_sheet_id = None
+	for sheet in created.get("sheets", []):
+		props = sheet.get("properties", {})
+		title = str(props.get("title") or "")
+		if title == "Sheet1":
+			default_sheet_id = props.get("sheetId")
+			break
+
+	template_parsed = service.spreadsheets().get(
+		spreadsheetId=template_spreadsheet_id,
+		fields="sheets.properties.sheetId,sheets.properties.title",
+	).execute()
+
+	rename_requests: list[dict] = []
+	for template_sheet in template_parsed.get("sheets", []):
+		props = template_sheet.get("properties", {})
+		template_sheet_id = props.get("sheetId")
+		template_title = str(props.get("title") or "").strip()
+		if template_sheet_id is None or not template_title:
+			continue
+
+		copied = service.spreadsheets().sheets().copyTo(
+			spreadsheetId=template_spreadsheet_id,
+			sheetId=template_sheet_id,
+			body={"destinationSpreadsheetId": new_spreadsheet_id},
+		).execute()
+
+		copied_sheet_id = copied.get("sheetId")
+		if copied_sheet_id is None:
+			continue
+
+		rename_requests.append(
+			{
+				"updateSheetProperties": {
+					"fields": "title",
+					"properties": {
+						"sheetId": copied_sheet_id,
+						"title": template_title,
+					},
+				}
+			}
+		)
+
+	requests: list[dict] = []
+	if default_sheet_id is not None:
+		requests.append({"deleteSheet": {"sheetId": default_sheet_id}})
+	requests.extend(rename_requests)
+
+	if requests:
+		service.spreadsheets().batchUpdate(
+			spreadsheetId=new_spreadsheet_id,
+			body={"requests": requests},
+		).execute()
+
+	return new_spreadsheet_id
+
+
+def _duplicate_sheet_tab(
+	spreadsheet_id: str,
+	source_sheet_id: int,
+	new_tab_name: str,
+	insert_sheet_index: int | None = None,
+) -> int:
+	"""Duplicate a sheet tab and rename it. Returns the new sheet ID."""
+	service = _google_sheets_service()
+
+	duplicate_request = {
+		"sourceSheetId": source_sheet_id,
+	}
+	if insert_sheet_index is not None:
+		duplicate_request["insertSheetIndex"] = int(insert_sheet_index)
+
+	requests = [
+		{
+			"duplicateSheet": {
+				**duplicate_request,
+			}
+		}
+	]
+	
+	response = service.spreadsheets().batchUpdate(
+		spreadsheetId=spreadsheet_id,
+		body={"requests": requests}
+	).execute()
+	
+	new_sheet_id = response["replies"][0]["duplicateSheet"]["properties"]["sheetId"]
+	
+	# Rename the new sheet
+	rename_requests = [
+		{
+			"updateSheetProperties": {
+				"fields": "title",
+				"properties": {
+					"sheetId": new_sheet_id,
+					"title": new_tab_name
+				}
+			}
+		}
+	]
+	
+	service.spreadsheets().batchUpdate(
+		spreadsheetId=spreadsheet_id,
+		body={"requests": rename_requests}
+	).execute()
+	
+	return new_sheet_id
+
+
+def _dashboard_insert_index(spreadsheet_id: str) -> int | None:
+	"""Return the index immediately after dashboard tab, or None if dashboard is not found."""
+	service = _google_sheets_service()
+	parsed = service.spreadsheets().get(
+		spreadsheetId=spreadsheet_id,
+		fields="sheets.properties.title,sheets.properties.index",
+	).execute()
+
+	for sheet in parsed.get("sheets", []):
+		props = sheet.get("properties", {})
+		title = str(props.get("title") or "").strip().casefold()
+		if "dashboard" in title:
+			index = props.get("index")
+			if isinstance(index, int):
+				return index + 1
+
+	return None
+
+
+def _get_sheet_tab_id_by_title(spreadsheet_id: str, title: str) -> int | None:
+	"""Get the sheet ID (gid) for a given sheet title."""
+	service = _google_sheets_service()
+	parsed = service.spreadsheets().get(
+		spreadsheetId=spreadsheet_id,
+		fields="sheets.properties.title,sheets.properties.sheetId"
+	).execute()
+
+	target = str(title or "").strip()
+	target_cf = target.casefold()
+	target_compact = re.sub(r"[^a-z0-9]+", "", target_cf)
+
+	# Pass 1: exact match.
+	for sheet in parsed.get("sheets", []):
+		sheet_title = str(sheet.get("properties", {}).get("title") or "")
+		if sheet_title == target:
+			return sheet.get("properties", {}).get("sheetId")
+
+	# Pass 2: case-insensitive/whitespace-insensitive match.
+	for sheet in parsed.get("sheets", []):
+		sheet_title = str(sheet.get("properties", {}).get("title") or "")
+		sheet_compact = re.sub(r"[^a-z0-9]+", "", sheet_title.casefold())
+		if sheet_compact == target_compact:
+			return sheet.get("properties", {}).get("sheetId")
+
+	# Pass 3: tolerate copy prefixes/suffixes (e.g., "Copy of class [TEMPLATE]").
+	for sheet in parsed.get("sheets", []):
+		sheet_title = str(sheet.get("properties", {}).get("title") or "")
+		sheet_compact = re.sub(r"[^a-z0-9]+", "", sheet_title.casefold())
+		if target_compact and target_compact in sheet_compact:
+			return sheet.get("properties", {}).get("sheetId")
+
+	return None
+
+
+def _fetch_canvas_enrolled_courses(canvas_context) -> list[str]:
+	"""Fetch list of course names the user is enrolled in from Canvas."""
+	courses_url = (
+		f"{CANVAS_BASE_URL}/api/v1/courses"
+		"?per_page=100&enrollment_state=active&state[]=available&include[]=total_scores"
+	)
+
+	def _should_ignore_generated_course(name: str) -> bool:
+		normalized = re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).strip()
+		return normalized in {
+			"beginners guide to s t",
+			"beginners guide to s and t",
+			"makeitsafe information security awareness training",
+			"rolla noncredit campus emergency alert training",
+		}
+
+	def _split_course_base_and_section(name: str) -> tuple[str, str | None]:
+		cleaned = str(name or "").strip()
+		match = re.match(r"^(.+)-([^-]+)$", cleaned)
+		if not match:
+			return cleaned.casefold(), None
+
+		base = match.group(1).strip()
+		section = match.group(2).strip()
+		# Only treat the trailing token as a section for Canvas-like course codes.
+		if re.match(r"^\d{4}[A-Za-z]{2}-[A-Za-z]+-\d+$", base):
+			return base.casefold(), section
+		return cleaned.casefold(), None
+
+	def _course_has_grades(course: dict) -> bool:
+		enrollments = course.get("enrollments")
+		if not isinstance(enrollments, list):
+			return False
+		for enrollment in enrollments:
+			if not isinstance(enrollment, dict):
+				continue
+			for key in ("computed_current_grade", "computed_current_score", "current_grade", "current_score"):
+				value = enrollment.get(key)
+				if value is None:
+					continue
+				if isinstance(value, str) and not value.strip():
+					continue
+				return True
+		return False
+
+	def _section_quality(section: str | None) -> int:
+		if not section:
+			return 1
+		upper = section.upper()
+		if upper == "ALL":
+			return 0
+		if section.isdigit():
+			return 4
+		if re.fullmatch(r"\d+[A-Za-z]+\d*", section):
+			return 2
+		if re.fullmatch(r"[A-Za-z]+\d*", section):
+			return 1
+		return 1
+
+	print("Fetching Canvas courses...")
+	courses = _fetch_all_pages(canvas_context.request, courses_url)
+	current_courses = [course for course in courses if isinstance(course, dict) and _is_current_canvas_course(course)]
+
+	selected_by_base: dict[str, dict] = {}
+	base_order: list[str] = []
+
+	for course in current_courses:
+		course_name = course.get("name")
+		if not isinstance(course_name, str) or not course_name.strip():
+			continue
+		if _should_ignore_generated_course(course_name):
+			print(f"Ignoring non-course entry: {course_name}")
+			continue
+
+		base_key, section = _split_course_base_and_section(course_name)
+		has_grades = _course_has_grades(course)
+		quality = _section_quality(section)
+		rank = (1 if has_grades else 0, quality)
+
+		existing = selected_by_base.get(base_key)
+		if existing is None:
+			selected_by_base[base_key] = {"name": course_name, "rank": rank}
+			base_order.append(base_key)
+			continue
+
+		if rank > existing["rank"]:
+			selected_by_base[base_key] = {"name": course_name, "rank": rank}
+
+	course_names = [selected_by_base[key]["name"] for key in base_order]
+	print(f"Found {len(course_names)} selected active courses: {course_names}")
+	return course_names
+
+
+def _write_classes_to_sheet(spreadsheet_id: str, class_names: list[str]) -> None:
+	"""Write class names to Dashboard!G2:G9 (dashboard sheet only)."""
+	service = _google_sheets_service()
+
+	# Locate dashboard sheet; fall back to first tab if needed.
+	parsed = service.spreadsheets().get(
+		spreadsheetId=spreadsheet_id,
+		fields="sheets.properties.title,sheets.properties.sheetId"
+	).execute()
+
+	sheets = parsed.get("sheets", [])
+	dashboard_title = ""
+	for sheet in sheets:
+		title = str(sheet.get("properties", {}).get("title") or "").strip()
+		if "dashboard" in title.casefold():
+			dashboard_title = title
+			break
+
+	if not dashboard_title:
+		dashboard_title = str(sheets[0].get("properties", {}).get("title") or "Dashboard") if sheets else "Dashboard"
+	
+	# Prepare data for G2:G9
+	values = [[class_names[i] if i < len(class_names) else ""] for i in range(8)]
+	
+	range_name = f"{_quote_sheet_name(dashboard_title)}!G2:G9"
+	body = {"values": values}
+	
+	service.spreadsheets().values().update(
+		spreadsheetId=spreadsheet_id,
+		range=range_name,
+		valueInputOption="RAW",
+		body=body
+	).execute()
+	
+	print(f"Wrote {len(class_names)} classes to {range_name}")
+
+
+def generate_formatted_sheet_from_template(canvas_context) -> str:
+	"""
+	Generate a formatted sheet from the template.
+	Steps:
+	1. Copy the template sheet
+	2. Rename it to "assignment tracker [username]"
+	3. Fetch Canvas courses
+	4. Write course names to G2:G9
+	5. Duplicate [TEMPLATE] tab for each course
+	6. Rename each tab to the course name
+	
+	Returns: The new spreadsheet URL
+	"""
+	try:
+		# Get user email
+		user_email = _get_google_user_email()
+		username = user_email.split("@")[0] if "@" in user_email else user_email
+		if str(username).strip().casefold() == "user":
+			canvas_name = _get_canvas_user_display_name(canvas_context)
+			if canvas_name:
+				username = canvas_name
+				print(f"Using Canvas profile name for sheet title: {canvas_name}")
+
+		username = re.sub(r"\s+", " ", str(username or "").strip()) or "user"
+		# Keep title comfortably below Google Sheets limits.
+		username = username[:70]
+		
+		# Copy template sheet
+		new_sheet_name = f"assignment tracker {username}"
+		print(f"Copying template sheet as '{new_sheet_name}'...")
+		try:
+			new_sheet_id = _copy_drive_file(TEMPLATE_SHEET_ID, new_sheet_name)
+		except Exception as copy_error:
+			print(f"Drive copy failed ({copy_error}). Falling back to Sheets API template copy...")
+			new_sheet_id = _copy_template_via_sheets_api(TEMPLATE_SHEET_ID, new_sheet_name)
+		
+		# Fetch Canvas courses
+		course_names = _fetch_canvas_enrolled_courses(canvas_context)
+		if not course_names:
+			raise RuntimeError("No active Canvas courses found. Cannot generate sheet.")
+		
+		# Limit to 8 courses (G2:G9 has 8 cells)
+		course_names = course_names[:8]
+		
+		# Write classes to sheet
+		_write_classes_to_sheet(new_sheet_id, course_names)
+		
+		# Get template tab ID
+		template_tab_id = _get_sheet_tab_id_by_title(new_sheet_id, "class [TEMPLATE]")
+		if template_tab_id is None:
+			raise RuntimeError("Template tab 'class [TEMPLATE]' not found in copied sheet.")
+
+		insert_index = _dashboard_insert_index(new_sheet_id)
+		
+		# Duplicate template tab for each course and rename
+		print(f"Creating {len(course_names)} class tabs...")
+		for course_name in course_names:
+			_duplicate_sheet_tab(
+				new_sheet_id,
+				template_tab_id,
+				course_name,
+				insert_sheet_index=insert_index,
+			)
+			if insert_index is not None:
+				insert_index += 1
+			print(f"  Created tab: {course_name}")
+		
+		# Build sheet URL
+		new_sheet_url = f"https://docs.google.com/spreadsheets/d/{new_sheet_id}/edit"
+		print(f"Sheet generation complete: {new_sheet_url}")
+		
+		return new_sheet_url
+		
+	except Exception as e:
+		raise RuntimeError(f"Sheet generation failed: {e}")
+
 
 SYNC_MODES = {
 	"1": {"name": "Sync all assignments", "include_past": True, "dry_run": False, "replace_existing": False},
@@ -625,6 +1127,77 @@ def _sheet_assignment_rows(service, spreadsheet_id: str, sheet_name: str) -> lis
 	return rows
 
 
+def _apply_due_date_column_format(service, spreadsheet_id: str, sheet_names: list[str]) -> None:
+	"""Ensure due-date column (B) is formatted as date for the provided tabs."""
+	if not sheet_names:
+		return
+
+	parsed = service.spreadsheets().get(
+		spreadsheetId=spreadsheet_id,
+		fields="sheets.properties.title,sheets.properties.sheetId",
+	).execute()
+
+	sheet_id_by_name: dict[str, int] = {}
+	for sheet in parsed.get("sheets", []):
+		props = sheet.get("properties", {})
+		title = str(props.get("title") or "").strip()
+		sheet_id = props.get("sheetId")
+		if title and isinstance(sheet_id, int):
+			sheet_id_by_name[title] = sheet_id
+
+	requests: list[dict] = []
+	for name in sheet_names:
+		sheet_id = sheet_id_by_name.get(str(name or "").strip())
+		if sheet_id is None:
+			print(f"Warning: Could not apply date format; tab not found: {name}")
+			continue
+
+		requests.append(
+			{
+				"repeatCell": {
+					"range": {
+						"sheetId": sheet_id,
+						"startRowIndex": 1,
+						"startColumnIndex": 1,
+						"endColumnIndex": 2,
+					},
+					"cell": {
+						"userEnteredFormat": {
+							"numberFormat": {
+								"type": "DATE",
+								"pattern": "mm/dd/yyyy",
+							}
+						}
+					},
+					"fields": "userEnteredFormat.numberFormat",
+				}
+			}
+		)
+
+	if not requests:
+		return
+
+	service.spreadsheets().batchUpdate(
+		spreadsheetId=spreadsheet_id,
+		body={"requests": requests},
+	).execute()
+
+
+def _find_dashboard_sheet_title(service, spreadsheet_id: str) -> str | None:
+	"""Find dashboard tab title using a case-insensitive match."""
+	parsed = service.spreadsheets().get(
+		spreadsheetId=spreadsheet_id,
+		fields="sheets.properties.title",
+	).execute()
+
+	for sheet in parsed.get("sheets", []):
+		title = str(sheet.get("properties", {}).get("title") or "").strip()
+		if "dashboard" in title.casefold():
+			return title
+
+	return None
+
+
 def clear_all_class_tabs() -> dict:
 	service = _google_sheets_service()
 	spreadsheet_id = _require_spreadsheet_id()
@@ -861,6 +1434,13 @@ def sync_assignments_to_sheet(
 	print(f"Replace existing rows: {'yes' if replace_existing else 'no'}")
 	print(f"Syncing {len(flat_records)} assignment rows to Google Sheet...")
 	print(f"Using sheet: {CURRENT_SHEET_URL}")
+
+	if not dry_run:
+		dashboard_title = _find_dashboard_sheet_title(service, spreadsheet_id)
+		if dashboard_title:
+			_apply_due_date_column_format(service, spreadsheet_id, [dashboard_title])
+		else:
+			print("Warning: Dashboard tab not found; skipped dashboard date format apply.")
 
 	class_stats: dict[str, dict] = {}
 	debug_messages: list[str] = []
