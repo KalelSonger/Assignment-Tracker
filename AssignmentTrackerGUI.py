@@ -113,6 +113,7 @@ class AssignmentTrackerGUI(tk.Tk):
         self.sheet_url_entry = None
         self.sheet_url_has_placeholder = False
         self.awaiting_initial_sheet_url = False
+        self._skip_next_auto_sync = False
         self.top_controls_frame = None
         self.top_controls_notice_var = tk.StringVar(value="")
         self.sync_running = False
@@ -239,7 +240,7 @@ class AssignmentTrackerGUI(tk.Tk):
 
         self.settings_window = tk.Toplevel(self)
         self.settings_window.title("Settings")
-        self.settings_window.geometry("420x250")
+        self.settings_window.geometry("420x320")
         self.settings_window.resizable(False, False)
         self.settings_window.transient(self)
         self.settings_window.protocol("WM_DELETE_WINDOW", self._close_settings_window)
@@ -287,8 +288,21 @@ class AssignmentTrackerGUI(tk.Tk):
         self.settings_theme_combo.grid(row=5, column=1, sticky="w")
         self.settings_theme_combo.bind("<<ComboboxSelected>>", self._on_theme_combo_selected)
 
+        ttk.Separator(container, orient="horizontal").grid(row=6, column=0, columnspan=2, sticky="ew", pady=12)
+
+        ttk.Label(container, text="Data", font=("Segoe UI", 10, "bold")).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+
+        ttk.Button(
+            container,
+            text="Remove saved sheet URLs",
+            command=self._settings_clear_sheet_urls,
+            width=24,
+        ).grid(row=8, column=0, columnspan=2, sticky="w")
+
         ttk.Button(container, text="Close", command=self._close_settings_window, width=12).grid(
-            row=6, column=1, sticky="e", pady=(18, 0)
+            row=9, column=1, sticky="e", pady=(18, 0)
         )
 
         self._apply_theme()
@@ -300,6 +314,24 @@ class AssignmentTrackerGUI(tk.Tk):
             self.settings_window.destroy()
         self.settings_window = None
         self.settings_theme_combo = None
+
+    def _settings_clear_sheet_urls(self):
+        confirmed = messagebox.askyesno(
+            "Remove saved sheet URLs",
+            "Are you sure you want to remove all saved sheet URLs?\n"
+            "You will need to add a sheet URL again before syncing.",
+            parent=self.settings_window,
+        )
+        if not confirmed:
+            return
+        self._close_settings_window()
+        self.sheet_registry = {"selected_api_url": "", "sheets": []}
+        self._save_sheet_registry()
+        self.allowed_tabs = []
+        self.sheet_patterns = []
+        self.awaiting_initial_sheet_url = True
+        self._log("All saved sheet URLs removed. Add a sheet URL to continue.")
+        self.after(0, lambda: self._show_sync_panel())
 
     def _theme_to_label(self, theme_name: str) -> str:
         normalized = str(theme_name or "").strip().lower()
@@ -779,6 +811,10 @@ class AssignmentTrackerGUI(tk.Tk):
         self._log(f"Theme changed to {selected_theme}.")
 
     def _maybe_start_auto_sync(self):
+        if self._skip_next_auto_sync:
+            self._skip_next_auto_sync = False
+            self._log("Auto sync skipped for first-time sheet setup.")
+            return
         if not self.app_settings.get("auto_sync_on_startup", False):
             return
         if self.sync_running:
@@ -1163,6 +1199,7 @@ class AssignmentTrackerGUI(tk.Tk):
 
         if self.awaiting_initial_sheet_url:
             self.awaiting_initial_sheet_url = False
+            self._skip_next_auto_sync = True
             self._set_status("Sheet saved. Continuing startup...")
             self._set_login_hint("Initializing with selected sheet...")
             threading.Thread(target=self._bootstrap_and_start_login, daemon=True).start()
