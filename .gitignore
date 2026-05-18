@@ -13,8 +13,13 @@ canvas_upcoming_assignments.json
 .venv/
 .pytest_cache/
 *.spec
-build_exe.ps1
-build_exe_preserve_state.local.ps1
+dist/app_settings.local.json
+dist/canvas_session.local.json
+dist/sheet_endpoints.local.json
+dist/keys.local.json
 
 # keep local secrets out of git
 keys.py
+client_secret.json
+google_oauth_client_secret.json
+google_sheets_token.local.json

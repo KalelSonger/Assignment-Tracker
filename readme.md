@@ -1,12 +1,13 @@
 # Assignment Tracker
 
-Google Sheets + Python desktop app workflow that syncs your Canvas assignments into a class-organized tracker.
+Assignment Tracker is a Python desktop app that pulls assignments from Canvas and syncs them directly into your Google Sheet class tabs.
 
 ## What this project does
 
 - Pulls upcoming assignments from Canvas.
-- Syncs those assignments into your Google Sheet tabs.
-- Gives you a simple desktop GUI (`AssignmentTrackerGUI.exe`) to run sync actions.
+- Syncs assignments into matching class tabs in your Google Sheet.
+- Supports multiple sheets from a dropdown in the GUI.
+- Stores Canvas and Google auth sessions locally so you do not need to sign in every launch.
 
 ## Setup Guide (with screenshots)
 
@@ -27,71 +28,16 @@ Google Sheets + Python desktop app workflow that syncs your Canvas assignments i
 
 > **Important:** class names must match exactly between dashboard and tab names.
 
-### 2) Create and deploy the Google Apps Script web app
-
-4. Go to https://script.google.com.
-
-![Apps Script home](images%20for%20readme/image-3.png)
-
-5. Click **New project**.
-
-![New Apps Script project](images%20for%20readme/image-4.png)
-
-6. Add the **Google Sheets API** service from the Services panel.
-
-![Add Google Sheets API service](images%20for%20readme/image-5.png)
-
-7. Open `GoogleSheetSync.gs` from this repo, copy it, and paste it into the `Code.gs` editor.
-
-![Paste script code](images%20for%20readme/image-6.png)
-
-8. Replace the spreadsheet ID in the script with your own sheet ID.
-
-Example template URL:
-https://docs.google.com/spreadsheets/d/17W5u-FZ-bq8ciiSIgSRu7B255P1kheF_G30hGUedHuU/edit?usp=sharing
-
-In any Google Sheet URL, the sheet ID is between `/d/` and `/edit`.
-
-![Replace sheet ID](images%20for%20readme/image-7.png)
-
-9. Click **Deploy** (top-right), then **New deployment**.
-
-![Open deploy menu](images%20for%20readme/image-8.png)
-
-10. Click the gear icon next to **Select type** and choose **Web app**.
-
-![Select web app deployment type](images%20for%20readme/image-9.png)
-
-> **Important:** set access to **Anyone**.
-
-11. Name the deployment and click **Deploy**.
-
-![Deploy web app](images%20for%20readme/image-10.png)
-
-12. Click **Authorize access**.
-
-![Authorize access prompt](images%20for%20readme/image-11.png)
-
-13. Click **Advanced** → **Go to (your project)**, then continue.
-
-![Advanced authorization](images%20for%20readme/image-12.png)
-
-![Continue authorization](images%20for%20readme/image-13.png)
-
-You should then see the deployment details page:
-
-![Deployment details page](images%20for%20readme/image-14.png)
-
 ## Run the app
 
 1. Open the `dist` folder.
 2. Run `AssignmentTrackerGUI.exe`.
-3. On first launch, dependencies may install automatically.
-4. Add your copied Web App URL to the field in the top-right of the GUI, then click **Add**.
+3. Sign in to Google when prompted (same account that can edit your sheet).
+4. Sign in to Canvas when prompted.
+5. Paste your Google Sheet URL in the top field and click **Add**.
 
 ![Add sheet URL in GUI](images%20for%20readme/image-20.png)
-
-5. Sign in to Canvas when the browser opens. This will need to be refreshed about once a month.
+ 
 6. Return to the GUI and run sync.
 
 ![Assignment Tracker GUI](images%20for%20readme/image-21.png)
@@ -102,8 +48,10 @@ You should then see the deployment details page:
 
 - `DEFAULT_CANVAS_BASE_URL` is set to `https://umsystem.instructure.com` by default.
 - If your school uses a different Canvas domain, replace it with your school’s Canvas base URL.
-- Other Canvas architectures are not fully tested.
-- You can add multiple spreadsheets to the top-right dropdown by adding different sheet URLs, then switch between them from that dropdown.
+- You can add multiple spreadsheets to the top-right dropdown and switch between them.
+- OAuth token is saved locally as `google_sheets_token.local.json`.
+- Canvas session is saved locally and refreshed as needed.
+- If Google sign-in shows "app is being tested", ask the app owner to add your account as a test user.
 
 ## Spreadsheet color behavior
 

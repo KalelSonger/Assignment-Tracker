@@ -11,7 +11,6 @@ import threading
 import time
 import traceback
 import urllib.parse
-import urllib.request
 import ctypes
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -1073,22 +1072,13 @@ class AssignmentTrackerGUI(tk.Tk):
         return f"Sheet @ {host}"
 
     def _safe_infer_sheet_name(self, api_url: str) -> str:
-        payload = urllib.parse.urlencode({"action": "tabs"}).encode("utf-8")
-        request = urllib.request.Request(api_url, data=payload, method="POST")
-        request.add_header("Content-Type", "application/x-www-form-urlencoded")
-
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                raw = response.read().decode("utf-8")
-            parsed = json.loads(raw)
+            if self.backend is not None and hasattr(self.backend, "infer_sheet_display_name"):
+                inferred = self.backend.infer_sheet_display_name(api_url)
+                if isinstance(inferred, str) and inferred.strip():
+                    return inferred.strip()
         except Exception:
-            return self._fallback_sheet_name(api_url)
-
-        if isinstance(parsed, dict):
-            for key in ("spreadsheetName", "spreadsheet_name", "sheetName", "sheet_name", "title", "name"):
-                value = parsed.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+            pass
 
         return self._fallback_sheet_name(api_url)
 
@@ -1148,6 +1138,10 @@ class AssignmentTrackerGUI(tk.Tk):
         if not cleaned:
             return ""
 
+        sheet_id_match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", cleaned)
+        if sheet_id_match:
+            return f"sheet://{sheet_id_match.group(1)}"
+
         parsed = urllib.parse.urlparse(cleaned)
         scheme = (parsed.scheme or "https").lower()
         netloc = parsed.netloc.lower()
@@ -1159,11 +1153,18 @@ class AssignmentTrackerGUI(tk.Tk):
         if self.sheet_url_has_placeholder and raw_url == SHEET_URL_PLACEHOLDER:
             raw_url = ""
         if not raw_url:
-            messagebox.showwarning("Missing URL", "Paste a Google Apps Script API URL first.")
+            messagebox.showwarning("Missing URL", "Paste a Google Sheet URL first.")
             return
 
         if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
-            messagebox.showwarning("Invalid URL", "Sheet API URL must start with http:// or https://")
+            messagebox.showwarning("Invalid URL", "Google Sheet URL must start with http:// or https://")
+            return
+
+        if "/spreadsheets/d/" not in raw_url:
+            messagebox.showwarning(
+                "Invalid URL",
+                "Paste a full Google Sheet URL, like https://docs.google.com/spreadsheets/d/<ID>/edit",
+            )
             return
 
         normalized_incoming = self._normalize_api_url(raw_url)
@@ -1321,6 +1322,27 @@ class AssignmentTrackerGUI(tk.Tk):
             self._log(traceback.format_exc())
             self._set_status("Sheet load failed")
 
+    def _apply_selected_sheet_endpoint(self) -> bool:
+        if self.backend is None:
+            self._log("Backend is not loaded.")
+            return False
+
+        api_url = self._selected_sheet_api_url()
+        if not api_url:
+            self._log("No sheet endpoint selected.")
+            return False
+
+        try:
+            self.backend.set_sheet_api_url(api_url)
+            if self.sheet_registry.get("selected_api_url") != api_url:
+                self.sheet_registry["selected_api_url"] = api_url
+                self._save_sheet_registry()
+            return True
+        except Exception as error:
+            self._log(f"Could not set selected sheet endpoint: {error}")
+            self._log(traceback.format_exc())
+            return False
+
     def _retry_login_browser(self):
         self._set_reopen_login_enabled(False)
         threading.Thread(target=self._reopen_login_worker, daemon=True).start()
@@ -1362,7 +1384,19 @@ class AssignmentTrackerGUI(tk.Tk):
 
             self.awaiting_initial_sheet_url = False
 
-            self.backend.set_sheet_api_url(selected_api_url)
+            try:
+                self.backend.set_sheet_api_url(selected_api_url)
+            except Exception:
+                self.sheet_registry["selected_api_url"] = ""
+                self._save_sheet_registry()
+                self.awaiting_initial_sheet_url = True
+                self.allowed_tabs = []
+                self.sheet_patterns = []
+                self._set_status("Sheet URL required")
+                self._set_login_hint("Add a Google Sheet URL at the top to continue.")
+                self._log("Saved sheet URL is invalid for direct-sheet mode. Add a Google Sheet URL.")
+                self.after(0, self._show_sync_panel)
+                return
 
             self._log(f"Config source: {CONFIG_SOURCE}")
             self._log(f"Active sheet API URL: {self.backend.get_sheet_api_url()}")
@@ -1418,6 +1452,19 @@ class AssignmentTrackerGUI(tk.Tk):
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "resvg-py"])
             except Exception:
                 self._log("Could not install resvg-py; settings button will use fallback gear text.")
+
+        if importlib.util.find_spec("googleapiclient") is None or importlib.util.find_spec("google_auth_oauthlib") is None:
+            self._log("Installing Google Sheets dependencies...")
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "google-api-python-client",
+                    "google-auth-oauthlib",
+                ]
+            )
 
         self._log("Ensuring Chromium is installed for Playwright...")
         subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
@@ -1500,6 +1547,9 @@ class AssignmentTrackerGUI(tk.Tk):
             self._log("An operation is already running. Please wait.")
             return
 
+        if not self._apply_selected_sheet_endpoint():
+            return
+
         self.sync_running = True
         self._set_status("Sync running...")
         threading.Thread(
@@ -1511,6 +1561,9 @@ class AssignmentTrackerGUI(tk.Tk):
     def _start_sync_single_tab(self, class_tab: str):
         if self.sync_running:
             self._log("An operation is already running. Please wait.")
+            return
+
+        if not self._apply_selected_sheet_endpoint():
             return
 
         self.sync_running = True
@@ -1529,6 +1582,9 @@ class AssignmentTrackerGUI(tk.Tk):
         if not messagebox.askyesno("Confirm clear all", "Clear all class tabs on the sheet?"):
             return
 
+        if not self._apply_selected_sheet_endpoint():
+            return
+
         self.sync_running = True
         self._set_status("Clearing all class tabs...")
         threading.Thread(target=self._run_clear_worker, args=(None,), daemon=True).start()
@@ -1541,6 +1597,9 @@ class AssignmentTrackerGUI(tk.Tk):
         if not messagebox.askyesno("Confirm clear tab", f"Clear tab '{class_tab}'?"):
             return
 
+        if not self._apply_selected_sheet_endpoint():
+            return
+
         self.sync_running = True
         self._set_status(f"Clearing {class_tab}...")
         threading.Thread(target=self._run_clear_worker, args=(class_tab,), daemon=True).start()
@@ -1551,6 +1610,8 @@ class AssignmentTrackerGUI(tk.Tk):
             with redirect_stdout(writer), redirect_stderr(writer):
                 if self.backend is None:
                     raise RuntimeError("Backend is not loaded.")
+
+                print(f"Using endpoint: {self.backend.get_sheet_api_url()}")
 
                 if class_tab:
                     response = self.backend.clear_single_class_tab(class_tab)
