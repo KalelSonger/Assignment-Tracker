@@ -284,7 +284,7 @@ class AssignmentTrackerGUI(tk.Tk):
         self.settings_theme_combo = ttk.Combobox(
             container,
             textvariable=self.settings_theme_label_var,
-            values=("System default", "Light theme", "Dark theme", "Coral theme"),
+            values=("System default", "Light theme", "Dark theme", "Coral theme", "Spotify theme"),
             state="readonly",
             width=20,
         )
@@ -340,6 +340,8 @@ class AssignmentTrackerGUI(tk.Tk):
         normalized = str(theme_name or "").strip().lower()
         if normalized == "system":
             return "System default"
+        if normalized == "spotify":
+            return "Spotify theme"
         if normalized == "coral":
             return "Coral theme"
         if normalized == "dark":
@@ -350,6 +352,8 @@ class AssignmentTrackerGUI(tk.Tk):
         normalized = str(label or "").strip().lower()
         if normalized.startswith("system"):
             return "system"
+        if normalized.startswith("spotify"):
+            return "spotify"
         if normalized.startswith("coral"):
             return "coral"
         if normalized.startswith("dark"):
@@ -656,6 +660,13 @@ class AssignmentTrackerGUI(tk.Tk):
             "check_hover_fg": "#ffffff",
         }
 
+    def _spotify_palette(self) -> dict[str, str]:
+        palette = self._dark_palette().copy()
+        palette["bg"] = "#121212"
+        palette["text_bg"] = "#121212"
+        palette["accent"] = "#1ED760"
+        return palette
+
     def _coral_palette(self) -> dict[str, str]:
         return {
             "bg": "#142E4C",
@@ -675,12 +686,14 @@ class AssignmentTrackerGUI(tk.Tk):
 
     def _apply_theme(self):
         requested = str(self.settings_theme_var.get() or "system").lower()
-        if requested not in ("system", "light", "dark", "coral"):
+        if requested not in ("system", "light", "dark", "coral", "spotify"):
             requested = "system"
 
         active_theme = self._detect_system_theme() if requested == "system" else requested
         if active_theme == "dark":
             palette = self._dark_palette()
+        elif active_theme == "spotify":
+            palette = self._spotify_palette()
         elif active_theme == "coral":
             palette = self._coral_palette()
         else:
@@ -779,7 +792,7 @@ class AssignmentTrackerGUI(tk.Tk):
             merged.update(parsed)
 
         configured_theme = str(merged.get("theme") or "system").lower()
-        if configured_theme not in ("light", "dark", "system", "coral"):
+        if configured_theme not in ("light", "dark", "system", "coral", "spotify"):
             configured_theme = "system"
 
         merged["theme"] = configured_theme
@@ -789,6 +802,10 @@ class AssignmentTrackerGUI(tk.Tk):
         self.settings_auto_sync_var.set(self.app_settings["auto_sync_on_startup"])
         self.settings_startup_app_var.set(self.app_settings["run_on_windows_startup"])
         self._apply_windows_startup_preference(silent=True)
+        actual_startup_enabled = self._is_windows_startup_enabled()
+        if actual_startup_enabled != self.app_settings["run_on_windows_startup"]:
+            self.app_settings["run_on_windows_startup"] = actual_startup_enabled
+            self.settings_startup_app_var.set(actual_startup_enabled)
         self.settings_theme_var.set(configured_theme)
         self.settings_theme_label_var.set(self._theme_to_label(configured_theme))
         self._save_app_settings()
@@ -829,7 +846,20 @@ class AssignmentTrackerGUI(tk.Tk):
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._windows_startup_registry_path(), 0, winreg.KEY_READ) as key:
                 stored_command, _ = winreg.QueryValueEx(key, self._windows_startup_value_name())
-                return bool(str(stored_command or "").strip())
+                command_text = str(stored_command or "").strip()
+                if not command_text:
+                    return False
+
+                executable_path = ""
+                if command_text.startswith('"') and '"' in command_text[1:]:
+                    executable_path = command_text.split('"', 2)[1].strip()
+                else:
+                    executable_path = command_text.split(" ", 1)[0].strip()
+
+                if executable_path and not os.path.isfile(executable_path):
+                    return False
+
+                return True
         except OSError:
             return False
 
@@ -872,7 +902,7 @@ class AssignmentTrackerGUI(tk.Tk):
 
     def _on_theme_selected(self):
         selected_theme = str(self.settings_theme_var.get() or "system").lower()
-        if selected_theme not in ("system", "light", "dark", "coral"):
+        if selected_theme not in ("system", "light", "dark", "coral", "spotify"):
             selected_theme = "system"
         self.app_settings["theme"] = selected_theme
         self.settings_theme_var.set(selected_theme)
@@ -1462,10 +1492,15 @@ class AssignmentTrackerGUI(tk.Tk):
                 with sync_playwright() as p:
                     api_context = p.request.new_context(storage_state=self.storage_state)
                     try:
-                        if not self.backend._is_canvas_authenticated(api_context):
-                            self._clear_canvas_session()
+                        auth_status = self._canvas_auth_status(api_context)
+                        if auth_status != "authenticated":
+                            if auth_status == "unauthenticated":
+                                self._clear_canvas_session()
+                                raise RuntimeError(
+                                    "Canvas session expired. Please sign in again before generating a sheet."
+                                )
                             raise RuntimeError(
-                                "Canvas session expired. Please sign in again before generating a sheet."
+                                "Could not verify Canvas session (network unavailable). Check your connection and retry."
                             )
 
                         class RequestContextShim:
@@ -1593,13 +1628,30 @@ class AssignmentTrackerGUI(tk.Tk):
         except Exception:
             return None
 
-    def _is_storage_state_authenticated(self, storage_state: dict) -> bool:
+    def _canvas_auth_status(self, api_context) -> str:
+        if self.backend is None:
+            return "unreachable"
+
+        if hasattr(self.backend, "get_canvas_auth_status"):
+            try:
+                status = str(self.backend.get_canvas_auth_status(api_context) or "").strip().lower()
+            except Exception:
+                status = ""
+            if status in ("authenticated", "unauthenticated", "unreachable"):
+                return status
+
+        try:
+            return "authenticated" if self.backend._is_canvas_authenticated(api_context) else "unauthenticated"
+        except Exception:
+            return "unreachable"
+
+    def _storage_state_auth_status(self, storage_state: dict) -> str:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as p:
             api_context = p.request.new_context(storage_state=storage_state)
             try:
-                return self.backend._is_canvas_authenticated(api_context)
+                return self._canvas_auth_status(api_context)
             finally:
                 api_context.dispose()
 
@@ -1707,21 +1759,32 @@ class AssignmentTrackerGUI(tk.Tk):
 
             self._set_status("Checking saved Canvas session...")
             saved_state = self._load_canvas_session_from_disk()
-            if saved_state and self._is_storage_state_authenticated(saved_state):
-                self.storage_state = saved_state
-                if self.awaiting_initial_sheet_url:
-                    self._set_status("Signed in. Sheet URL required.")
-                    self._set_login_hint("Saved Canvas session restored. Add a sheet URL at the top to continue.")
-                    self._log("Using saved Canvas session. Add a sheet URL to continue.")
-                else:
-                    self._set_status("Signed in. Ready to sync.")
-                    self._set_login_hint("Saved Canvas session restored.")
-                    self._log("Using saved Canvas session. No login needed.")
-                self.after(0, self._show_sync_panel)
-                self.after(250, self._maybe_start_auto_sync)
-                return
-
             if saved_state:
+                saved_status = self._storage_state_auth_status(saved_state)
+                if saved_status in ("authenticated", "unreachable"):
+                    self.storage_state = saved_state
+                    if self.awaiting_initial_sheet_url:
+                        self._set_status("Signed in. Sheet URL required.")
+                        hint = "Saved Canvas session restored. Add a sheet URL at the top to continue."
+                        if saved_status == "unreachable":
+                            hint = "Loaded saved Canvas session (network check unavailable). Add a sheet URL to continue."
+                        self._set_login_hint(hint)
+                        self._log("Using saved Canvas session. Add a sheet URL to continue.")
+                    else:
+                        self._set_status("Signed in. Ready to sync.")
+                        hint = "Saved Canvas session restored."
+                        if saved_status == "unreachable":
+                            hint = "Loaded saved Canvas session (network check unavailable)."
+                        self._set_login_hint(hint)
+                        self._log("Using saved Canvas session. No login needed.")
+
+                    if saved_status == "unreachable":
+                        self._log("Canvas auth could not be verified (network unavailable). Keeping saved session.")
+
+                    self.after(0, self._show_sync_panel)
+                    self.after(250, self._maybe_start_auto_sync)
+                    return
+
                 self._log("Saved Canvas session expired. Re-login required.")
                 self._clear_canvas_session()
 
@@ -1954,10 +2017,15 @@ class AssignmentTrackerGUI(tk.Tk):
                 with sync_playwright() as p:
                     api_context = p.request.new_context(storage_state=storage_state)
 
-                    if not self.backend._is_canvas_authenticated(api_context):
-                        self._clear_canvas_session()
+                    auth_status = self._canvas_auth_status(api_context)
+                    if auth_status != "authenticated":
+                        if auth_status == "unauthenticated":
+                            self._clear_canvas_session()
+                            raise RuntimeError(
+                                "Canvas session expired. Click 'Reopen browser' from the sign-in panel to login again."
+                            )
                         raise RuntimeError(
-                            "Canvas session expired. Click 'Reopen browser' from the sign-in panel to login again."
+                            "Could not verify Canvas session (network unavailable). Check your connection and retry."
                         )
 
                     class RequestContextShim:

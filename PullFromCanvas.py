@@ -714,8 +714,23 @@ def _fetch_all_pages(api_context, url: str) -> list[dict]:
 
 
 def _is_canvas_authenticated(api_context) -> bool:
-	response = api_context.get(f"{CANVAS_BASE_URL}/api/v1/users/self")
-	return response.ok
+	return get_canvas_auth_status(api_context) == "authenticated"
+
+
+def get_canvas_auth_status(api_context) -> str:
+	"""Return Canvas auth status: authenticated, unauthenticated, or unreachable."""
+	try:
+		response = api_context.get(f"{CANVAS_BASE_URL}/api/v1/users/self")
+	except Exception:
+		return "unreachable"
+
+	if response.ok:
+		return "authenticated"
+
+	if int(getattr(response, "status", 0) or 0) in (401, 403):
+		return "unauthenticated"
+
+	return "unreachable"
 
 
 def _wait_for_login(context, page, timeout_seconds: int = 300, poll_interval_ms: int = 1500) -> None:
